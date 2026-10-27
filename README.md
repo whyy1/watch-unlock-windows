@@ -2,6 +2,8 @@
 
 用 Apple Watch 解锁 Windows：锁屏后戴着手表走开，再走回来，电脑自动解锁。
 
+文档站：<https://whyy1.github.io/watch-unlock-windows/>。打不开的话，直接看下面的说明，内容是一样的。
+
 ## 设计初衷
 
 初衷就是想在 Windows 上也有 Mac 那样用 Apple Watch 无感解锁的体验，所以找到了原项目继续开发。它的安全性比不上 Apple 官方的自动解锁，只建议在可信的环境下使用。
