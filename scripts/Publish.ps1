@@ -41,7 +41,10 @@ function Get-GiteeToken {
 
 function Invoke-Gitee([string]$Method, [string]$Path, [Net.Http.HttpContent]$Content) {
     $uri = "https://gitee.com/api/v5/repos/$GiteeRepo/$Path"
-    if ($Method -eq 'GET') { $uri += "?access_token=$([Uri]::EscapeDataString($giteeToken))" }
+    # Gitee reads the token from the query for GET and for file uploads; a multipart field is ignored (401).
+    if ($Method -eq 'GET' -or $Content -is [Net.Http.MultipartFormDataContent]) {
+        $uri += "?access_token=$([Uri]::EscapeDataString($giteeToken))"
+    }
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $uri)
     $request.Content = $Content
     $response = $http.SendAsync($request).GetAwaiter().GetResult()
