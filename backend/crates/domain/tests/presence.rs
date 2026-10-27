@@ -116,3 +116,22 @@ fn invalid_inputs_leave_original_state_unchanged() {
         assert!(state.armed());
     }
 }
+
+#[test]
+fn departure_before_the_lock_arms_only_a_fresh_locked_cycle() {
+    let locked = DeviceState::default()
+        .step(&POLICY, Session { generation: 2, locked: true }, Observation::Unavailable { at_ms: 1 })
+        .unwrap();
+    let armed = locked.state.arm_departed();
+    assert!(armed.armed());
+    assert_eq!(armed.presence(), Presence::Away);
+    assert_eq!(step(&armed, 2, -60, 2).decision, Decision::ReturnUnlock);
+
+    let unlocked = DeviceState::default()
+        .step(&POLICY, Session { generation: 1, locked: false }, Observation::Unavailable { at_ms: 1 })
+        .unwrap();
+    assert!(!unlocked.state.arm_departed().armed());
+
+    let returned = step(&armed, 2, -60, 2).state;
+    assert!(!returned.arm_departed().armed());
+}

@@ -108,6 +108,16 @@ impl DeviceState {
         }
     }
 
+    /// Carries a far crossing observed just before this lock into the lock cycle, for locks
+    /// that only happen once the watch is already gone (Windows Dynamic Lock). The caller
+    /// must only pass evidence from a scanner that stayed healthy up to the lock.
+    pub fn arm_departed(&self) -> Self {
+        if !self.locked || self.return_emitted {
+            return self.clone();
+        }
+        Self { presence: Presence::Away, armed: true, ..self.clone() }
+    }
+
     /// Returns a new state; an error leaves the caller's state unchanged.
     /// Explicit adapter loss, recovery wake and suspend revoke automatic authority.
     /// Ordinary device silence sends no observation: it cannot arm an unknown device,

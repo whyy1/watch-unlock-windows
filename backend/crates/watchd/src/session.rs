@@ -81,6 +81,18 @@ fn locked_from_session_flags(flags: i32) -> anyhow::Result<bool> {
     }
 }
 
+/// Windows「动态锁」（设置 → 账户 → 登录选项）是否开启。只用于推测锁屏原因和诊断。
+pub fn dynamic_lock_enabled() -> bool {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut data = 0u32;
+    let mut size = 4u32;
+    let status = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"),
+            w!("EnableGoodbye"), RRF_RT_REG_DWORD, None, Some((&mut data as *mut u32).cast()), Some(&mut size))
+    };
+    status.is_ok() && data != 0
+}
+
 /// 主动查询当前 WTS 会话的锁定状态。
 ///
 /// 部分 Modern Standby/开合盖顺序会漏掉 `WM_WTSSESSION_CHANGE/LOCK`，所以唤醒和

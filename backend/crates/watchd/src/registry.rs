@@ -148,6 +148,21 @@ pub fn import_identity(path: &Path) -> Result<[u8; 16]> {
     clear.0.as_slice().try_into().map_err(|_|anyhow::anyhow!("Identity file must decrypt to exactly 16 bytes"))
 }
 
+/// Settings for this PC rather than for one watch.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Settings {
+    /// Keep scanning with the lid closed, for laptops used shut with an external monitor.
+    /// Off by default: closing the lid then stops scanning until it is opened again.
+    pub scan_with_lid_closed: bool,
+}
+
+pub fn load_settings() -> Result<Settings> {
+    let path = data_dir()?.join("settings.json");
+    if !path.exists() { return Ok(Settings::default()); }
+    read_json(&path)
+}
+
 pub fn load_notifications() -> Result<Notifications> {
     let path = data_dir()?.join("notifications.json");
     if !path.exists() { return Ok(Notifications::default()); }
@@ -180,8 +195,13 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).context("Invalid metadata")
 }
 
+/// The only metadata files the app writes. Every new settings file must be added here.
+fn metadata_file(name: &str) -> bool {
+    matches!(name, "devices.json" | "notifications.json" | "settings.json" | "status.json")
+}
+
 pub fn write_json<T: Serialize + ?Sized>(name: &str, value: &T) -> Result<()> {
-    if !matches!(name, "devices.json" | "notifications.json" | "status.json") {
+    if !metadata_file(name) {
         bail!("Invalid metadata filename");
     }
     let dir = data_dir()?;
@@ -208,6 +228,16 @@ pub fn write_json<T: Serialize + ?Sized>(name: &str, value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_file_the_app_writes_is_an_allowed_metadata_file() {
+        for name in ["devices.json", "notifications.json", "settings.json", "status.json"] {
+            assert!(metadata_file(name), "{name}");
+        }
+        for name in ["cred.blob", "../devices.json", "settings.json.tmp", ""] {
+            assert!(!metadata_file(name), "{name}");
+        }
+    }
 
     #[test]
     fn identifiers_cannot_escape_secret_directory() {

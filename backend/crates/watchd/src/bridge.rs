@@ -36,7 +36,29 @@ fn error_text(error: &anyhow::Error) -> String {
     "操作失败，请检查参数、账户密码、配对身份或应用目录权限。".to_owned()
 }
 
+/// Operation names are short snake_case words; anything else is not echoed into the history.
+fn valid_op(op: &str) -> bool {
+    (1..=32).contains(&op.len()) && op.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+}
+
+/// A coarse, input-free description of why an operation failed, for the event history.
+fn failure_kind(error: &anyhow::Error) -> String {
+    if error.downcast_ref::<Shown>().is_some() || error.downcast_ref::<crate::notify::Failure>().is_some() {
+        return "已向用户说明原因".into();
+    }
+    for cause in error.chain() {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return format!("文件或系统错误（{:?}）", io.kind());
+        }
+        if let Some(windows) = cause.downcast_ref::<windows::core::Error>() {
+            return format!("Windows 错误 0x{:08X}", windows.code().0);
+        }
+    }
+    "参数或内部检查未通过".into()
+}
+
 pub fn run() -> Result<()> {
+    let mut op: Option<String> = None;
     let result = (|| -> Result<Value> {
         let mut bytes = Vec::new();
         std::io::stdin().take(16 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -44,11 +66,19 @@ pub fn run() -> Result<()> {
         let parsed = serde_json::from_slice(&bytes);
         crate::enroll::clear_bytes(&mut bytes);
         let request = Request(parsed.context("Invalid request")?);
+        op = request.0.get("op").and_then(Value::as_str).filter(|op| valid_op(op)).map(str::to_owned);
         dispatch(&request.0)
     })();
     let response = match result {
         Ok(data) => json!({"ok":true,"data":data}),
-        Err(error) => json!({"ok":false,"error":error_text(&error)}),
+        Err(error) => {
+            // The UI only sees a generic sentence; keep which operation failed and the kind of
+            // error, never the error text itself, which can carry input or paths.
+            if let Some(op) = op.as_deref().filter(|op| !matches!(*op, "snapshot" | "history" | "paired_devices" | "diagnostics")) {
+                crate::audit::record("ui_request_failed", None, &format!("操作 {op} 未完成：{}", failure_kind(&error)));
+            }
+            json!({"ok":false,"error":error_text(&error)})
+        }
     };
     println!("{}", serde_json::to_string(&response)?);
     std::io::stdout().flush()?;
@@ -86,6 +116,7 @@ pub fn snapshot() -> Result<Value> {
             "configured":secret_configured("bark-key.dpapi"),
             "notify_on_unlock":config.notify_on_unlock
         },
+        "settings":registry::load_settings().unwrap_or_default(),
         "credential_configured":crate::enroll::credential_configured(),
         "backend_running":fresh && status["running"] == true,
         "runtime":if fresh { status } else { json!({"running":false}) },
@@ -115,6 +146,13 @@ fn dispatch(request: &Value) -> Result<Value> {
             snapshot()
         }
         "save_notifications" => save_notifications(request),
+        "save_settings" => {
+            let scan_with_lid_closed = request.get("scan_with_lid_closed").and_then(Value::as_bool)
+                .context("Missing scan_with_lid_closed flag")?;
+            registry::write_json("settings.json", &registry::Settings { scan_with_lid_closed })?;
+            crate::audit::record("settings_saved",None,if scan_with_lid_closed {"已开启合盖时继续检测手表"} else {"已关闭合盖时继续检测手表"});
+            snapshot()
+        }
         "save_credential" => {
             if !registry::load_devices()?.iter().any(|d| registry::identity_configured(&d.id)) {
                 bail!("Bind an identity before storing credentials");
@@ -228,6 +266,16 @@ fn save_notifications(request: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_records_name_the_operation_and_kind_only() {
+        assert!(valid_op("save_settings"));
+        for op in ["", "Save", "save settings", "../x", &"a".repeat(33)] { assert!(!valid_op(op)); }
+        let io = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).context(r"C:\Users\someone");
+        assert_eq!(failure_kind(&io), "文件或系统错误（PermissionDenied）");
+        assert_eq!(failure_kind(&anyhow::anyhow!("secret input")), "参数或内部检查未通过");
+        assert_eq!(failure_kind(&anyhow::Error::new(Shown("密码不对"))), "已向用户说明原因");
+    }
 
     #[test]
     fn only_fixed_messages_reach_the_ui() {

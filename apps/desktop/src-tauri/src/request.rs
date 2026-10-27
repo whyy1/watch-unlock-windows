@@ -16,6 +16,7 @@ pub enum Request {
         notify_on_unlock: Option<bool>,
     },
     SaveCredential { password: String },
+    SaveSettings { scan_with_lid_closed: bool },
     ClearCredential,
     PairedDevices,
     BindPaired { address: String, name: String },
@@ -93,7 +94,7 @@ impl Request {
 
     pub fn valid(&self) -> bool {
         match self {
-            Self::Snapshot | Self::History | Self::ClearCredential | Self::PairedDevices
+            Self::Snapshot | Self::History | Self::ClearCredential | Self::PairedDevices | Self::SaveSettings { .. }
                 | Self::ClearHistory | Self::NotifyTest | Self::Diagnostics => true,
             Self::BindPaired { address, name } => address_format(address)
                 && bounded(name, 64) && !name.trim().is_empty()
@@ -202,5 +203,13 @@ mod tests {
         for password in ["a".repeat(1025), "密".repeat(342), "invalid\0password".into()] {
             assert!(!valid(json!({"op":"save_credential","password":password})));
         }
+    }
+
+    #[test]
+    fn settings_request_takes_only_the_lid_switch() {
+        assert!(valid(json!({"op":"save_settings","scan_with_lid_closed":true})));
+        assert!(!valid(json!({"op":"save_settings"})));
+        assert!(!valid(json!({"op":"save_settings","scan_with_lid_closed":"yes"})));
+        assert!(!valid(json!({"op":"save_settings","scan_with_lid_closed":true,"extra":1})));
     }
 }

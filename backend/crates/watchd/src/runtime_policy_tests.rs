@@ -246,3 +246,96 @@ fn a_kept_return_needs_a_fresh_near_signal_and_ends_when_leaving_again() {
     assert_eq!(back.decision, Decision::ReturnUnlock);
     assert!(back.authority.authorized(at(origin, 6_000)));
 }
+
+const UNLOCKED: Session = Session { generation: 1, locked: false };
+const RELOCKED: Session = Session { generation: 2, locked: true };
+
+fn before_lock(device: &DeviceAuthority, origin: Instant, milliseconds: u64, rssi: i16) -> DeviceAuthority {
+    device.observe(UNLOCKED, rssi, at(origin, milliseconds), milliseconds).unwrap().authority
+}
+
+/// What the daemon does on a new lock: snapshot, revoke, then carry a departure across.
+fn lock(device: &DeviceAuthority, trusted: bool, milliseconds: u64) -> DeviceAuthority {
+    let departed = device.departed();
+    let locked = device.invalidate(RELOCKED, milliseconds).unwrap();
+    if departed && trusted { locked.arm_departed() } else { locked }
+}
+
+#[test]
+fn dynamic_lock_after_the_watch_left_unlocks_on_the_first_return() {
+    let origin = Instant::now();
+    let left = before_lock(&DeviceAuthority::new(POLICY), origin, 0, -85);
+    assert!(left.departed());
+    // Dynamic Lock locks about a minute later; no signal arrives while the watch is gone.
+    let locked = lock(&left, true, 60_000);
+    assert!(locked.armed());
+    let returned = locked.observe(RELOCKED, -55, at(origin, 600_000), 600_000).unwrap();
+    assert_eq!(returned.decision, Decision::ReturnUnlock);
+    assert!(returned.authority.authorized(at(origin, 600_000)));
+}
+
+#[test]
+fn locking_beside_the_pc_never_arms_from_earlier_departures() {
+    let origin = Instant::now();
+    let left = before_lock(&DeviceAuthority::new(POLICY), origin, 0, -85);
+    let back = before_lock(&left, origin, 1_000, -70);
+    assert!(!back.departed());
+    let locked = lock(&back, true, 2_000);
+    assert!(!locked.armed());
+    let near = locked.observe(RELOCKED, -50, at(origin, 3_000), 3_000).unwrap();
+    assert_eq!(near.decision, Decision::None);
+
+    let nearby = lock(&before_lock(&DeviceAuthority::new(POLICY), origin, 0, -45), true, 1_000);
+    assert!(!nearby.armed());
+    assert!(!lock(&DeviceAuthority::new(POLICY), true, 1_000).armed());
+}
+
+#[test]
+fn a_departure_is_void_when_the_scanner_or_settings_changed_at_the_lock() {
+    let origin = Instant::now();
+    let left = before_lock(&DeviceAuthority::new(POLICY), origin, 0, -85);
+    assert!(!lock(&left, false, 60_000).armed());
+    // A revocation before the lock clears the remembered signal itself.
+    let revoked = left.invalidate(UNLOCKED, 30_000).unwrap();
+    assert!(!revoked.departed());
+    assert!(!lock(&revoked, true, 60_000).armed());
+}
+
+#[test]
+fn lock_cause_prefers_recent_input_then_display_off_then_dynamic_lock() {
+    let s = Duration::from_secs;
+    assert_eq!(lock_cause(Some(s(1)), Some(s(1)), true), LockCause::Manual);
+    assert_eq!(lock_cause(Some(s(3)), None, true), LockCause::Manual);
+    assert_eq!(lock_cause(Some(s(4)), Some(s(5)), true), LockCause::DisplayOff);
+    assert_eq!(lock_cause(Some(s(4)), Some(s(6)), false), LockCause::Unknown);
+    assert_eq!(lock_cause(Some(s(20)), Some(s(60)), true), LockCause::DynamicLock);
+    assert_eq!(lock_cause(Some(s(19)), None, true), LockCause::Unknown);
+    assert_eq!(lock_cause(Some(s(600)), None, false), LockCause::Unknown);
+    assert_eq!(lock_cause(None, None, true), LockCause::Unknown);
+}
+
+#[test]
+fn blockers_name_each_failed_condition() {
+    assert!(ready().blockers().is_empty());
+    let waiting = SubmissionConditions { provider_ready: false, credential_configured: false, ..ready() };
+    assert_eq!(waiting.blockers(), vec!["登录界面组件未连接", "没有保存账户密码"]);
+}
+
+#[test]
+fn the_lid_switch_is_off_by_default_and_changes_nothing_while_off() {
+    let default: crate::registry::Settings = serde_json::from_str("{}").unwrap();
+    assert!(!default.scan_with_lid_closed);
+    // Off: closing the lid stops scanning, as in every earlier version.
+    assert!(lid_close_stops_scanning(default.scan_with_lid_closed));
+    assert!(!lid_close_stops_scanning(true));
+    // Saving without flipping it, or flipping it with the lid open, leaves scanning alone.
+    for lid_closed in [false, true] {
+        assert_eq!(lid_switch_change(lid_closed, false, false), None);
+        assert_eq!(lid_switch_change(lid_closed, true, true), None);
+    }
+    assert_eq!(lid_switch_change(false, false, true), None);
+    assert_eq!(lid_switch_change(false, true, false), None);
+    // Flipped while the lid is shut: applies at once.
+    assert_eq!(lid_switch_change(true, false, true), Some(true));
+    assert_eq!(lid_switch_change(true, true, false), Some(false));
+}

@@ -441,3 +441,9 @@ main {
 .version-link.has-update .version-dot {
   background: #b42318;
 }
+
+.hero .lock-note {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--faint);
+}

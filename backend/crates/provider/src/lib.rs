@@ -108,7 +108,11 @@ struct State {
     usage: Mutex<Option<CREDENTIAL_PROVIDER_USAGE_SCENARIO>>,
     signal: Mutex<Option<pipe::UnlockSignal>>,
     events: events::Events,
+    /// Permanent: set on destruction or an unsupported scenario. Advise fails afterwards.
     stop: Arc<AtomicBool>,
+    /// Stop flag of the current pipe worker. UnAdvise only pauses: LogonUI may hide the tile
+    /// (for example the extra lock-screen layer after Windows Dynamic Lock) and Advise again.
+    link: Mutex<Arc<AtomicBool>>,
     submitted: AtomicBool,
 }
 
@@ -121,6 +125,12 @@ impl State {
 
     fn cancel(&self) {
         self.stop.store(true, Ordering::Release);
+        self.pause();
+    }
+
+    /// Drops the pipe connection and any undelivered credential; a later Advise reconnects.
+    fn pause(&self) {
+        lock_ok(&self.link).store(true, Ordering::Release);
         lock_ok(&self.signal).take();
         self.events.unadvise();
     }
@@ -147,10 +157,46 @@ impl WatchUnlockProvider {
                 signal: Mutex::new(None),
                 events: events::Events::default(),
                 stop: Arc::new(AtomicBool::new(false)),
+                link: Mutex::new(Arc::new(AtomicBool::new(true))),
                 submitted: AtomicBool::new(false),
             }),
             worker: Mutex::new(None),
         }
+    }
+}
+
+impl WatchUnlockProvider {
+    /// Starts a pipe worker unless one is connected or a credential is already waiting.
+    fn connect_worker(&self) -> windows::core::Result<()> {
+        if self.state.stop.load(Ordering::Acquire) {
+            return Err(E_FAIL.into());
+        }
+        let mut worker = lock_ok(&self.worker);
+        let mut link = lock_ok(&self.state.link);
+        let running = !link.load(Ordering::Acquire) && worker.as_ref().is_some_and(|handle| !handle.is_finished());
+        if running || lock_ok(&self.state.signal).is_some() {
+            return Ok(());
+        }
+        let current = Arc::new(AtomicBool::new(false));
+        *link = current.clone();
+        drop(link);
+        let state = self.state.clone();
+        let paused = current.clone();
+        let handle = pipe::run_pipe_client(current, move |signal| {
+            {
+                let mut pending = lock_ok(&state.signal);
+                if state.stop.load(Ordering::Acquire) || paused.load(Ordering::Acquire)
+                    || state.submitted.load(Ordering::Acquire) {
+                    return;
+                }
+                *pending = Some(signal);
+            }
+            if !state.stop.load(Ordering::Acquire) {
+                state.events.notify();
+            }
+        }).map_err(|_| windows::core::Error::from(E_FAIL))?;
+        *worker = Some(handle);
+        Ok(())
     }
 }
 
@@ -294,25 +340,7 @@ impl ICredentialProvider_Impl for WatchUnlockProvider_Impl {
             return Err(E_FAIL.into());
         }
         *lock_ok(&self.state.usage) = Some(cpus);
-        let mut worker = lock_ok(&self.worker);
-        if worker.is_none() {
-            let state = self.state.clone();
-            let handle = pipe::run_pipe_client(state.stop.clone(), move |signal| {
-                {
-                    let mut pending = lock_ok(&state.signal);
-                    if state.stop.load(Ordering::Acquire)
-                        || state.submitted.load(Ordering::Acquire) {
-                        return;
-                    }
-                    *pending = Some(signal);
-                }
-                if !state.stop.load(Ordering::Acquire) {
-                    state.events.notify();
-                }
-            }).map_err(|_| windows::core::Error::from(E_FAIL))?;
-            *worker = Some(handle);
-        }
-        Ok(())
+        self.connect_worker()
     }
 
     fn SetSerialization(
@@ -333,12 +361,13 @@ impl ICredentialProvider_Impl for WatchUnlockProvider_Impl {
     ) -> windows::core::Result<()> {
         if self.state.stop.load(Ordering::Acquire) { return Err(E_FAIL.into()); }
         self.state.events.advise(pcpe, upadvisecontext)?;
+        if lock_ok(&self.state.usage).is_some() { self.connect_worker()?; }
         if self.state.ready() { self.state.events.notify(); }
         Ok(())
     }
 
     fn UnAdvise(&self) -> windows::core::Result<()> {
-        self.state.cancel();
+        self.state.pause();
         Ok(())
     }
 
@@ -646,6 +675,23 @@ mod tests {
         assert!(lock_ok(&provider.state.signal).is_none());
         assert!(!provider.state.ready());
         assert!(provider.state.claim_submission().is_err());
+    }
+
+    #[test]
+    fn unadvise_pauses_without_retiring_the_provider() {
+        let provider = WatchUnlockProvider::new();
+        let link = Arc::new(AtomicBool::new(false));
+        *lock_ok(&provider.state.link) = link.clone();
+        *lock_ok(&provider.state.signal) = Some(pipe::UnlockSignal {
+            password: "test-only".into(), username: "test".into(), domain: "test".into(),
+        });
+        provider.state.pause();
+        assert!(link.load(Ordering::Acquire));
+        assert!(lock_ok(&provider.state.signal).is_none());
+        assert!(!provider.state.stop.load(Ordering::Acquire));
+        provider.state.cancel();
+        assert!(provider.state.stop.load(Ordering::Acquire));
+        assert!(provider.connect_worker().is_err());
     }
 
     #[test]

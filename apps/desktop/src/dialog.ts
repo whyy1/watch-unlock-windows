@@ -55,7 +55,7 @@ export function openDeviceDialog(
 
 /** Manual identity entry, only for a device that has none yet (normally binding fills it in). */
 function identityFields(): string {
-  return `<p class="form-hint">一般不用手动登记：在「附近扫描」完成配对后点「绑定此设备」，身份会自动保存。只有已经自己取得这块手表的 IRK 时，才在这里填写。</p>
+  return `<p class="form-hint">一般不用手动登记：在「设备」页的「添加手表」里配对并点「绑定此设备」，身份会自动保存。只有已经自己取得这块手表的 IRK 时，才在这里填写。</p>
     <label>身份导入方式<select name="identity_source"><option value="manual">手动输入 IRK</option><option value="file">CurrentUser DPAPI 密文文件</option></select></label>
     <label id="irk-field">手表 IRK<input name="irk" type="password" autocomplete="new-password" pattern="[0-9a-fA-F]{32}" maxlength="32" required placeholder="32 位十六进制身份密钥"/></label>
     <label id="identity-file-field" hidden>身份密文文件绝对路径<input name="irk_blob_path" type="password" autocomplete="new-password" maxlength="4096" disabled placeholder="粘贴 .dpapi 或 .blob 文件的完整路径"/><small>文件必须由当前 Windows 账户加密，解密后恰好为 16 字节。路径仅用于本次导入，不写入设备配置或日志。</small></label>`;

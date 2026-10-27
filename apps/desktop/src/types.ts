@@ -39,6 +39,8 @@ export interface HistoryEntry {
 export interface Snapshot {
   devices: Device[];
   notifications: Notifications;
+  /** Absent from backends older than this setting. */
+  settings?: { scan_with_lid_closed: boolean };
   credential_configured: boolean;
   history: HistoryEntry[];
   backend_running: boolean;
@@ -55,6 +57,9 @@ export interface BackendRuntime {
   devices?: {
     id: string;
     rssi: number | null;
+    /** Last signal however old; `rssi` is only set while it is under 2 seconds old. */
+    last_rssi?: number | null;
+    last_seen_ms?: number | null;
     presence: string;
     armed: boolean;
     wearer_state: "unknown";
@@ -65,6 +70,8 @@ export interface Signal {
   rssi: number;
   samples: number[];
   lastSeen: number;
+  /** How old the shown value is; 0 or absent while the signal is live. */
+  ageMs?: number;
 }
 
 export interface DeviceSignal extends Signal {
@@ -103,7 +110,7 @@ export interface PairingStatus {
   reason: string;
 }
 export type Page =
-  "overview" | "scan" | "devices" | "history" | "notifications";
+  "overview" | "devices" | "history" | "notifications";
 
 export const emptySnapshot = (): Snapshot => ({
   devices: [],

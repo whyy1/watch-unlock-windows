@@ -12,7 +12,7 @@ pub struct Event {
 }
 
 pub fn record(event: &str, device_id: Option<&str>, detail: &str) {
-    // All callsites supply static event/detail text, never external errors.
+    // Callsites supply fixed text, or fixed text with our own numbers; never external errors.
     let _ = append(Event { at_ms: epoch_ms(), event: event.into(),
         device_id: device_id.map(str::to_owned), detail: detail.into() });
 }

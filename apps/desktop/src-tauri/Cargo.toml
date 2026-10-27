@@ -1,6 +1,6 @@
 [package]
 name = "watch-unlock-desktop"
-version = "0.2.6"
+version = "0.2.7"
 description = "Local desktop interface for Watch Unlock"
 edition = "2021"
 license = "AGPL-3.0-only"

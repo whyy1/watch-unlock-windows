@@ -54,9 +54,25 @@
 - 发版前先在 `CHANGELOG.md` 里写好 `## x.y.z` 一节，并同步修改 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本号；缺少这一节时打包会报错。
 - 私钥用 `npx tauri signer generate` 生成。打包时优先读取环境变量 `TAURI_SIGNING_PRIVATE_KEY`（和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）；没有设置时，读取本机用 DPAPI 加密保存的 `%USERPROFILE%\.watch-unlock\updater-key.dpapi`，只在打包进程的环境变量里解密。
 - **私钥必须另外备份（例如放进密码管理器）。私钥一旦丢失，已经安装的用户就再也无法自动更新，只能手动下载新版安装。** 私钥不能提交到仓库。
-- 设置 `-GiteeRepo owner/repo`（或环境变量 `WATCH_UNLOCK_GITEE_REPO`）时，打包还会写出 `updates/latest-gitee.json`，下载地址指向 Gitee 发行版。
+- 国内用户访问 GitHub 下载不稳定，所以 `endpoints` 先查 Gitee 镜像 `why_y1/watch-unlock-windows` 上 `main` 分支的 `updates/latest-gitee.json`，失败了再查 GitHub。打包时会顺带写出这个文件，下载地址指向 Gitee 发行版；用 `-GiteeRepo owner/repo`（或环境变量 `WATCH_UNLOCK_GITEE_REPO`）可以换仓库，传 `-GiteeRepo ''` 则不生成。
 
-发版：提交全部改动后运行 `./scripts/Publish.ps1`。它会给当前提交打 `v<版本>` 标签，把 `main` 和标签推送到 `origin` 与 `gitee`（没有配置的远程会跳过），并用 `gh` 创建 GitHub Release，上传安装程序、`.sig`、`latest.json` 和 `SHA256SUMS.txt`。加 `-WhatIf` 只做检查、不发布。Gitee 发行版的附件需要在网页上手动上传。
+发版：打包后把 `updates/latest-gitee.json` 和其他改动一起提交，然后运行 `./scripts/Publish.ps1`。脚本依次执行：
+
+1. 给当前提交打 `v<版本>` 标签，推送到 `origin` 和 `gitee`。没有配置的远程会跳过。
+2. 用 `gh` 创建 GitHub Release，上传安装程序、`.sig`、`latest.json` 和 `SHA256SUMS.txt`。
+3. 通过 Gitee API 创建同名发行版，上传同样的附件，并核对安装程序的下载地址和 `updates/latest-gitee.json` 里写的一致。
+4. 最后推送 `main`。Gitee 上的更新清单要等这一步推送后才生效，这时附件已经传好了。
+
+中途失败时修好问题再运行一次即可，已经建好的发行版和已经上传的附件会跳过。加 `-WhatIf` 只做检查，不发布。
+
+Gitee 需要一个勾选了 `projects` 权限的私人令牌（Gitee「设置」→「私人令牌」）。优先读取环境变量 `WATCH_UNLOCK_GITEE_TOKEN`，没有设置时读取用 DPAPI 加密保存的 `%USERPROFILE%\.watch-unlock\gitee-token.dpapi`。保存方法：
+
+```powershell
+Read-Host '粘贴 Gitee 私人令牌' -AsSecureString | ConvertFrom-SecureString |
+    Set-Content -LiteralPath "$env:USERPROFILE\.watch-unlock\gitee-token.dpapi"
+```
+
+令牌只放在请求正文里发送，不会出现在命令行或输出中。
 
 ## 开发界面
 

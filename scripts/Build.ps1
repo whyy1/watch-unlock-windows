@@ -5,8 +5,8 @@ param(
     [string]$RustToolsRoot = $env:WATCH_UNLOCK_TOOL_ROOT,
     [string]$ResourceToolsRoot = $env:WATCH_UNLOCK_RESOURCE_TOOLS,
     [string]$RustToolchain = $env:WATCH_UNLOCK_RUST_TOOLCHAIN,
-    # Gitee mirror "owner/repo"; when set, package also writes updates/latest-gitee.json.
-    [string]$GiteeRepo = $env:WATCH_UNLOCK_GITEE_REPO
+    # Gitee mirror "owner/repo"; package also writes updates/latest-gitee.json for it. '' skips it.
+    [string]$GiteeRepo = $(if ($env:WATCH_UNLOCK_GITEE_REPO) { $env:WATCH_UNLOCK_GITEE_REPO } else { 'why_y1/watch-unlock-windows' })
 )
 
 $ErrorActionPreference = 'Stop'

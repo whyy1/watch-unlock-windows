@@ -167,7 +167,7 @@ pub fn load_credential() -> Option<StoredCredential> {
     (record.version == 1).then_some(record)
 }
 
-const WRONG_PASSWORD: &str = "密码不对：Windows 没有接受这个密码。请填写当前 Windows 账户的登录密码（微软账户就填微软账户密码），不是 PIN 码，注意大小写。";
+const WRONG_PASSWORD: &str = "密码验证失败。请填写本机登录账户的密码，不支持 PIN。如忘记密码，可点击「忘记密码？」查看重置方法。";
 
 /// Validate against Windows and require the returned token to have the current user's SID.
 pub fn enroll_password(password: &str) -> anyhow::Result<()> {

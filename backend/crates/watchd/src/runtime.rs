@@ -19,7 +19,7 @@ use crate::{adapters,audit,ble,pipe,registry,session};
 
 #[path = "runtime_policy.rs"]
 mod policy;
-use policy::{accepts_signal, input_after, DeviceAuthority, SubmissionConditions, SubmissionGate};
+use policy::{accepts_signal, input_after, lid_close_stops_scanning, lid_switch_change, lock_cause, DeviceAuthority, SubmissionConditions, SubmissionGate};
 
 struct DeviceRuntime {
     config:registry::Device,
@@ -43,7 +43,7 @@ fn devices(previous:&[DeviceRuntime])->Result<Vec<DeviceRuntime>> {
 
 fn revision()->Vec<(String,Option<(SystemTime,u64)>)> {
     let dir=registry::data_dir().ok();
-    let names=["devices.json","notifications.json","cred.blob","bark-key.dpapi"]
+    let names=["devices.json","notifications.json","settings.json","cred.blob","bark-key.dpapi"]
         .into_iter().map(String::from)
         .chain(registry::load_devices().unwrap_or_default().into_iter()
             .map(|device|format!("device-{}.dpapi",device.id))).collect::<BTreeSet<_>>();
@@ -106,6 +106,13 @@ pub fn run()->Result<()> {
     let mut session_known=true;
     // Set when this lock cycle submitted an unlock, for the post-unlock notification.
     let mut notify_on_unlock=false;
+    // Only for guessing why the session locked.
+    let mut display_off_at:Option<Instant>=None;
+    let mut settings=registry::load_settings().unwrap_or_default();
+    // Lid state as last reported; scanning stops while it is closed unless the user opted in.
+    let mut lid_closed=false;
+    // Why an authorized return is not being submitted: (reasons, since, recorded).
+    let mut blocked:Option<(String,Instant,bool)>=None;
     audit::record("backend_started",None,"后台已启动；佩戴与手表锁定状态未知");
     loop {
         if stop.requested() {
@@ -117,6 +124,8 @@ pub fn run()->Result<()> {
         let at_ms=origin.elapsed().as_millis() as u64;
         let mut invalidate=false;
         let mut new_lock=false;
+        // Any invalidation in this tick other than the lock itself voids pre-lock evidence.
+        let mut revoked=false;
         let mut write_status=false;
         loop {
             let event=match deferred_session.take().map(Ok).unwrap_or_else(||session_rx.try_recv()) {
@@ -129,7 +138,6 @@ pub fn run()->Result<()> {
                     lock=Session{generation:lock.generation+1,locked:true};
                     session_known=true;
                     submissions=SubmissionGate::default();invalidate=true;new_lock=true;notify_on_unlock=false;
-                    audit::record("session_locked",None,"新锁屏周期，等待手表远离后返回");
                 }
                 session::SessionEvent::Unlock=>{
                     if lock.locked && std::mem::take(&mut notify_on_unlock) {crate::notify::notify_unlock_async();}
@@ -137,16 +145,25 @@ pub fn run()->Result<()> {
                     // A WTS event cannot prove which credential provider succeeded.
                     audit::record("session_unlocked",None,"Windows 会话已解锁；认证来源未归因");
                 }
-                session::SessionEvent::Pause(session::PauseReason::DisplayOff)=>{},
-                session::SessionEvent::Pause(_)=>{
-                    scan_requested=false;scanner=None;invalidate=true;
+                session::SessionEvent::Pause(session::PauseReason::DisplayOff)=>{display_off_at=Some(Instant::now());},
+                session::SessionEvent::Pause(session::PauseReason::LidClosed)=>{
+                    lid_closed=true;
+                    if lid_close_stops_scanning(settings.scan_with_lid_closed) {
+                        scan_requested=false;scanner=None;invalidate=true;revoked=true;
+                    } else {
+                        audit::record("lid_closed_scanning",None,"已合盖，按设置继续检测手表");
+                    }
                 }
-                session::SessionEvent::Resume=>{scan_requested=true;invalidate=true;}
-                session::SessionEvent::Wake(_)=>{
+                session::SessionEvent::Pause(_)=>{
+                    scan_requested=false;scanner=None;invalidate=true;revoked=true;
+                }
+                session::SessionEvent::Resume=>{scan_requested=true;invalidate=true;revoked=true;}
+                session::SessionEvent::Wake(reason)=>{
+                    if reason==session::WakeReason::LidOpen {lid_closed=false;}
                     scan_requested=true;
                     // Display wake never creates authority. A healthy running scanner
                     // retains previously observed far evidence across display-off.
-                    if scanner.is_none(){invalidate=true;}
+                    if scanner.is_none(){invalidate=true;revoked=true;}
                 }
                 _=>{}
             }
@@ -155,18 +172,25 @@ pub fn run()->Result<()> {
             match event {
                 pipe::PipeEvent::Hello(connection)=>{
                     // Once per connection: shows when the logon UI actually became ready.
-                    if provider.is_none() && lock.locked {
-                        audit::record("provider_connected",None,"登录界面组件已连接，可以接收解锁");
+                    if provider.is_none() {
+                        audit::record("provider_connected",None,if lock.locked {"登录界面组件已连接，可以接收解锁"}
+                            else {"登录界面组件已连接（此时还没收到锁屏通知）"});
                     }
                     provider=Some(connection)
                 }
-                pipe::PipeEvent::Gone=>provider=None,
+                pipe::PipeEvent::Gone=>{
+                    // After a delivered unlock this is the normal end of the logon screen.
+                    if provider.is_some() && lock.locked && !submissions.submitted() {
+                        audit::record("provider_disconnected",None,"登录界面组件已断开，重新连接前无法解锁");
+                    }
+                    provider=None;
+                }
             }
         }
         // Revoke as soon as a stopped adapter is observed, independently of the
         // slower rebuild backoff. No queued packet can revive a failed scanner.
         if scanner.as_ref().is_some_and(|scanner|!scanner.is_running()) {
-            scanner=None;invalidate=true;
+            scanner=None;invalidate=true;revoked=true;
             audit::record("scanner_unavailable",None,"扫描器已停止，旧距离证据已立即撤销");
         }
         if last_housekeeping.elapsed()>=Duration::from_secs(1) {
@@ -182,28 +206,64 @@ pub fn run()->Result<()> {
                     invalidate=true;
                     audit::record("session_reconciled",None,"会话状态已重新核对，旧授权已撤销");
                 }
-                Err(_)=>{invalidate=true;},
+                Err(_)=>{invalidate=true;revoked=true;},
                 _=>{}
             }
             let next_revision=revision();
             if next_revision!=previous_revision {
-                active=devices(&active)?;previous_revision=next_revision;invalidate=true;
+                active=devices(&active)?;previous_revision=next_revision;invalidate=true;revoked=true;
+                let next_settings=registry::load_settings().unwrap_or_default();
+                // A switch flipped while the lid is shut applies at once.
+                if let Some(scan)=lid_switch_change(lid_closed,settings.scan_with_lid_closed,next_settings.scan_with_lid_closed) {
+                    scan_requested=scan;
+                    if !scan {scanner=None;}
+                }
+                settings=next_settings;
                 lock.generation+=1;
                 audit::record("configuration_reloaded",None,"配置变更，旧授权已撤销");
             }
             if scan_requested && scanner.as_ref().is_none_or(|scanner|!scanner.is_running())
                 && last_rebuild.elapsed()>Duration::from_secs(5) {
-                drop(scanner.take());invalidate=true;last_rebuild=now;
+                drop(scanner.take());invalidate=true;revoked=true;last_rebuild=now;
                 scanner=watcher(&adv_tx,&counter).ok();
                 audit::record("scanner_reset",None,"扫描器已重建，旧距离证据已撤销");
             }
         }
         if invalidate {
-            evidence_floor=Instant::now();
+            if new_lock {blocked=None;}
+            let lock_now=Instant::now();
+            // Dynamic Lock only locks once the watch is already out of range, so no far signal
+            // follows the lock. A far crossing seen just before it, on a scanner that stayed
+            // healthy up to the lock, counts for this lock cycle.
+            let trusted=new_lock && lock.locked && !revoked && session_known && scan_requested
+                && scanner.as_ref().is_some_and(|scanner|scanner.is_running());
+            let before=active.iter().map(|device|(device.authority.departed(),device.authority.last_signal())).collect::<Vec<_>>();
+            evidence_floor=lock_now;
             let _=command_tx.send(pipe::PipeCommand::Cancel);
             for device in &mut active {
                 device.authority=device.authority.invalidate(lock,at_ms)?;
                 if new_lock {device.return_tick=None;}
+            }
+            if new_lock && lock.locked {
+                let idle=last_input_tick().map(|last|Duration::from_millis(unsafe {GetTickCount()}.wrapping_sub(last) as u64));
+                let cause=lock_cause(idle,display_off_at.map(|at|lock_now.saturating_duration_since(at)),session::dynamic_lock_enabled());
+                let idle_text=idle.map_or_else(String::new,|idle|format!("；锁屏前已无操作 {} 秒",idle.as_secs()));
+                audit::record("session_locked",None,&format!("新锁屏周期（推测：{}{idle_text}）",cause.text()));
+                for (device,(departed,last)) in active.iter_mut().zip(before) {
+                    let seen=last.map(|(at,rssi)|format!("最后信号 {rssi} dBm，在 {} 秒前",lock_now.saturating_duration_since(at).as_secs()));
+                    let id=Some(device.config.id.as_str());
+                    match seen {
+                        Some(seen) if departed && trusted=>{
+                            device.authority=device.authority.arm_departed();
+                            audit::record("far_before_lock",id,&format!("锁屏前手表已越过远离阈值（{seen}），回来即可解锁"));
+                        }
+                        Some(seen) if departed=>audit::record("lock_watch_state",id,
+                            &format!("锁屏前手表已越过远离阈值（{seen}），但扫描器或配置同时有变化，这次不算；要走远后再回来")),
+                        Some(seen)=>audit::record("lock_watch_state",id,
+                            &format!("锁屏时手表未越过远离阈值（{seen}）；要走远后再回来")),
+                        None=>audit::record("lock_watch_state",id,"锁屏前没有收到这块手表的信号；要走远后再回来"),
+                    }
+                }
             }
             for _ in adv_rx.try_iter().take(64) {}
         }
@@ -261,6 +321,18 @@ pub fn run()->Result<()> {
                 scanner_running:scan_requested && scanner.as_ref().is_some_and(|scanner|scanner.is_running())};
             let (next,submit)=submissions.reserve(conditions,deadline.is_some());
             submissions=next;
+            // Record a block that lasts, not the brief ones while a session event or reload settles.
+            if submit || submissions.submitted() || deadline.is_none() {blocked=None;}
+            else {
+                let why=conditions.blockers().join("、");
+                match &mut blocked {
+                    Some((reasons,since,recorded)) if *reasons==why=>if !*recorded && since.elapsed()>=Duration::from_secs(1) {
+                        *recorded=true;
+                        audit::record("unlock_blocked",Some(&device.config.id),&format!("可以解锁，但暂未提交：{why}"));
+                    },
+                    _=>blocked=Some((why,Instant::now(),false)),
+                }
+            }
             if submit {
                 // Mark before IPC: any outcome consumes this lock cycle's attempt.
                 let device_id=device.config.id.clone();
@@ -275,10 +347,15 @@ pub fn run()->Result<()> {
         }
         if write_status {
             let status_now=Instant::now();
-            let status=active.iter().map(|device|json!({"id":device.config.id,
+            let status=active.iter().map(|device| {
+                // The last signal however old, so the UI can tell a slow watch from a silent one.
+                let last=device.authority.last_signal();
+                json!({"id":device.config.id,
                 "rssi":device.authority.rssi(status_now),
+                "last_rssi":last.map(|(_,rssi)|rssi),
+                "last_seen_ms":last.map(|(at,_)|status_now.saturating_duration_since(at).as_millis() as u64),
                 "presence":if device.authority.near(status_now){"near"}else if device.authority.armed(){"away"}else{"unknown"},
-                "armed":device.authority.armed(),"wearer_state":"unknown"})).collect::<Vec<_>>();
+                "armed":device.authority.armed(),"wearer_state":"unknown"})}).collect::<Vec<_>>();
             let _=registry::write_json("status.json",&json!({"running":true,"at_ms":audit::epoch_ms(),
                 "locked":lock.locked,"provider_ready":provider.is_some(),"scanner_active":scanner.as_ref().is_some_and(|s|s.is_running()),
                 "submitted_this_lock":submissions.submitted(),"devices":status}));

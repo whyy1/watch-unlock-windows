@@ -136,3 +136,11 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+@media (max-width: 800px) {
+  .manual-panel,
+  .fold-body .panel-title {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}

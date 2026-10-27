@@ -4,17 +4,18 @@ import { field, openDeviceDialog, secretFields } from "./dialog";
 import { collectSignals, patchLive } from "./live";
 import { validateDevice, validateNotifications, validatePassword } from "./validation";
 import {
+  addWatchContent,
   devicesPage,
   escape,
   historyPage,
   notificationsPage,
   overview,
-  scanPage,
   scanResults,
   setupBanner,
   shell,
 } from "./render";
-import type { HistoryFilter } from "./render";
+import type { AddWatchState, HistoryFilter } from "./render";
+import { icon } from "./icons";
 import { appVersion, findUpdate, showChangelog, showUpdate } from "./update";
 import { emptySnapshot } from "./types";
 import type {
@@ -60,11 +61,15 @@ function changelogSeen(): boolean {
   try { return localStorage.getItem(seenKey) === version; } catch { return true; }
 }
 let binding = false;
+/** Ticks the elapsed time in the binding dialog. */
+let bindingTimer = 0;
 let historyFilter: HistoryFilter = "all";
+/** The user's choice for the 添加手表 section; null until they open or close it. */
+let addOpen: boolean | null = null;
+let advancedOpen = false;
 
 const pages: Page[] = [
   "overview",
-  "scan",
   "devices",
   "history",
   "notifications",
@@ -72,14 +77,53 @@ const pages: Page[] = [
 const currentPage = (): Page =>
   pages.find((p) => p === location.hash.slice(1)) || "overview";
 
+/** Open while there is nothing to show yet or a pairing or binding is running, unless the user chose. */
+function addState(): AddWatchState {
+  return {
+    open: pairing || binding || (addOpen ?? !data.devices.length),
+    advancedOpen,
+    pairing,
+    pairingStatus,
+    paired,
+    binding,
+    pairingBound: pairingBound(),
+    observed,
+    scanning,
+  };
+}
+
+/** Shows the 添加手表 section, from any page, and scrolls to `target` inside it. */
+function openAddWatch(target = "#add-panel"): void {
+  addOpen = true;
+  if (currentPage() !== "devices") {
+    pendingScroll = target;
+    location.hash = "devices";
+    return;
+  }
+  const panel = document.querySelector<HTMLDetailsElement>("#add-panel");
+  if (panel) panel.open = true;
+  document.querySelector<HTMLElement>(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+/** Where to scroll after the next page change. */
+let pendingScroll = "";
+
 function toast(message: string): void {
   const element = document.querySelector<HTMLDivElement>("#toast")!;
   element.textContent = message;
+  element.title = "点击复制这条提示";
+  // Users often send these messages on; a click copies the text instead of a screenshot.
+  element.onclick = () => {
+    void navigator.clipboard.writeText(message).then(
+      () => { element.textContent = "已复制到剪贴板。"; },
+      () => undefined,
+    );
+  };
   element.classList.add("visible");
   window.clearTimeout(toastTimer);
+  // Long guidance, such as the wrong-password steps, needs longer than a short notice.
   toastTimer = window.setTimeout(
     () => element.classList.remove("visible"),
-    6000,
+    Math.min(20000, Math.max(6000, message.length * 150)),
   );
 }
 
@@ -129,9 +173,7 @@ function render(): void {
   renderBanner();
   const content = document.querySelector<HTMLDivElement>("#page-content")!;
   if (page === "overview") content.innerHTML = overview(data, status, signals, setup);
-  if (page === "scan")
-    content.innerHTML = scanPage(observed, scanning, pairing, pairingStatus, paired, binding, pairingBound());
-  if (page === "devices") content.innerHTML = devicesPage(data, signals);
+  if (page === "devices") content.innerHTML = devicesPage(data, signals, addState());
   if (page === "history") content.innerHTML = historyPage(data, historyFilter);
   if (page === "notifications") content.innerHTML = notificationsPage(data);
   bind();
@@ -165,12 +207,22 @@ function bind(): void {
     };
   });
   document
-    .querySelectorAll<HTMLButtonElement>("#go-scan, #empty-scan")
+    .querySelectorAll<HTMLButtonElement>("#go-scan, #empty-scan, #add-watch")
     .forEach((b) => {
-      b.onclick = () => {
-        location.hash = "scan";
-      };
+      b.onclick = () => openAddWatch();
     });
+  document.querySelector<HTMLButtonElement>("#empty-bind")?.addEventListener("click", () => openAddWatch("#paired-list"));
+  document.querySelector<HTMLButtonElement>("#empty-pair")?.addEventListener("click", () => {
+    openAddWatch("#add-content");
+    if (!pairing) document.querySelector<HTMLButtonElement>("#pairing-toggle")?.click();
+  });
+  // Remember only what the user clicks; a section rendered open also fires "toggle".
+  document.querySelector<HTMLElement>("#add-panel > summary")?.addEventListener("click", () => {
+    addOpen = !document.querySelector<HTMLDetailsElement>("#add-panel")!.open;
+  });
+  document.querySelector<HTMLElement>("#advanced-panel > summary")?.addEventListener("click", () => {
+    advancedOpen = !document.querySelector<HTMLDetailsElement>("#advanced-panel")!.open;
+  });
   document
     .querySelector<HTMLButtonElement>("#add-device")
     ?.addEventListener("click", () => showDevice());
@@ -181,7 +233,7 @@ function bind(): void {
     b.onclick = () => removeDevice(b.dataset.remove || "");
   });
   bindScanRows();
-  bindPairedRows();
+  bindAddContent();
   document.querySelector<HTMLButtonElement>("#scan-toggle")?.addEventListener(
     "click",
     () =>
@@ -190,7 +242,7 @@ function bind(): void {
         await bridge.scan(shouldStart);
         scanning = shouldStart;
         if (shouldStart) observed = [];
-        render();
+        updateScanPanel();
       }),
   );
   document.querySelector<HTMLInputElement>("#autostart")?.addEventListener("change", (event) => {
@@ -201,6 +253,19 @@ function bind(): void {
       try {
         setup = await bridge.setAutostart(enabled);
         toast(enabled ? "已开启：以后每次登录 Windows 都会自动启动后台。" : "已关闭开机自启；需要时请手动启动后台。");
+      } finally {
+        render();
+      }
+    });
+  });
+  document.querySelector<HTMLInputElement>("#lid-scan")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const enabled = input.checked;
+    input.disabled = true;
+    void act(async () => {
+      try {
+        data = await bridge.request<Snapshot>({ op: "save_settings", scan_with_lid_closed: enabled });
+        toast(enabled ? "已开启：合盖后会继续检测手表。" : "已关闭：合盖后停止检测手表，开盖后恢复。");
       } finally {
         render();
       }
@@ -222,26 +287,6 @@ function bind(): void {
         );
       }),
   );
-  document
-    .querySelector<HTMLButtonElement>("#pairing-toggle")
-    ?.addEventListener(
-      "click",
-      () =>
-        void act(async () => {
-          const shouldStart = !pairing;
-          if (shouldStart) {
-            pairingStatus = null;
-            // Remember who was already paired, so only the watch paired now is bound automatically.
-            pairedBefore = new Set((paired ?? []).map((device) => device.address));
-            autoBindPending = true;
-            pairedByWindows = false;
-            boundThisPairing = false;
-          }
-          await bridge.pair(shouldStart);
-          pairing = shouldStart;
-          render();
-        }),
-    );
   document.querySelectorAll<HTMLButtonElement>("[data-goto-password]").forEach((button) => {
     button.onclick = goToPassword;
   });
@@ -305,6 +350,7 @@ function bind(): void {
   document
     .querySelector<HTMLFormElement>("#credential-form")
     ?.addEventListener("submit", saveCredential);
+  document.querySelector<HTMLButtonElement>("#password-help")?.addEventListener("click", showPasswordHelp);
   document
     .querySelector<HTMLButtonElement>("#clear-credential")
     ?.addEventListener(
@@ -362,7 +408,7 @@ function checkPairedList(event: PairingStatus): void {
       if (pairingStatus) pairingStatus = { ...pairingStatus, paired: true };
       if (pairing) void bridge.pair(false).catch(() => undefined);
     }
-    rerenderScanPage();
+    refreshAddPanel();
     autoBindNewWatch();
     // A watch Windows paired earlier never shows up as new; it only needs binding.
     if (event.status === "stopped" && !pairedByWindows && event.reason !== "cancelled"
@@ -381,65 +427,149 @@ async function loadPaired(): Promise<void> {
   }
 }
 
-function rerenderScanPage(): void {
-  if (currentPage() === "scan" && !document.querySelector<HTMLDialogElement>("#device-dialog")?.open)
-    render();
+/**
+ * Redraws only the 添加手表 section. Pairing events arrive every second; a full render would
+ * wipe a password being typed further down the page.
+ */
+function refreshAddPanel(): void {
+  if (currentPage() !== "devices") return;
+  const content = document.querySelector<HTMLElement>("#add-content");
+  if (!content) return;
+  content.innerHTML = addWatchContent(addState());
+  bindAddContent();
 }
 
-function bindPairedRows(): void {
+function bindAddContent(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-bind-paired]").forEach((b) => {
     b.onclick = () => void bindPairedDevice(b.dataset.bindPaired || "");
   });
+  const toggle = document.querySelector<HTMLButtonElement>("#pairing-toggle");
+  if (toggle)
+    toggle.onclick = () =>
+      void act(async () => {
+        const shouldStart = !pairing;
+        if (shouldStart) {
+          pairingStatus = null;
+          // Remember who was already paired, so only the watch paired now is bound automatically.
+          pairedBefore = new Set((paired ?? []).map((device) => device.address));
+          autoBindPending = true;
+          pairedByWindows = false;
+          boundThisPairing = false;
+        }
+        await bridge.pair(shouldStart);
+        pairing = shouldStart;
+        refreshAddPanel();
+      });
+}
+
+/** The 高级 scan list and its button, without touching the rest of the page. */
+function updateScanPanel(): void {
+  const button = document.querySelector<HTMLButtonElement>("#scan-toggle");
+  if (button) button.innerHTML = `${icon("scan")}${scanning ? "停止扫描" : "开始扫描"}`;
+  const results = document.querySelector<HTMLDivElement>("#scan-results");
+  if (results) {
+    results.innerHTML = scanResults(observed);
+    bindScanRows();
+  }
+  const count = document.querySelector<HTMLElement>("#scan-count");
+  if (count) count.textContent = String(observed.length);
 }
 
 /**
  * Elevated, one-time identity read. The UAC prompt and the 30 s verification scan both happen
- * in the backend, so the UI stays in the binding state until the request returns.
+ * in the backend; a dialog stays up until the request returns and then shows the outcome.
  */
 async function bindPairedDevice(address: string): Promise<void> {
   const target = paired?.find((d) => d.address === address);
   if (!target || binding) return;
   binding = true;
-  rerenderScanPage();
-  toast("正在绑定：如果弹出 Windows 管理员确认，点「是」；让手表靠近电脑，验证最长约 30 秒。");
+  // Quotes are rejected by the request validator; the name is editable afterwards.
+  const name = (target.name || "").replace(/["\u0000-\u001f]/g, "").trim() || "Apple Watch";
+  showBinding(name);
+  refreshAddPanel();
   let boundId: string | null = null;
+  let failure = "";
   try {
-    // Quotes are rejected by the request validator; the name is editable afterwards.
-    const name = (target.name || "").replace(/["\u0000-\u001f]/g, "").trim();
-    await bridge.bindPaired(address, name || "Apple Watch");
+    await bridge.bindPaired(address, name);
     await refresh();
     boundId = data.devices.find((d) => d.address === address)?.id ?? null;
     if (boundId && pairingStatus) boundThisPairing = true;
   } catch (error) {
-    toast(error instanceof Error ? error.message : "绑定未完成，请重试。");
+    failure = error instanceof Error ? error.message : "绑定未完成，请重试。";
   } finally {
     binding = false;
+    window.clearInterval(bindingTimer);
   }
   await loadPaired();
   render();
   if (boundId) showBound(boundId);
+  else showBindFailed(address, name, failure || "绑定未完成，请重试。");
 }
 
-/** After binding: say what is still missing, so the user is not left on the scan page. */
+function infoDialog(): HTMLDialogElement {
+  return document.querySelector<HTMLDialogElement>("#info-dialog")!;
+}
+
+/** Opens the dialog unless it is already up, as when the binding dialog turns into its result. */
+function showInfo(dialog: HTMLDialogElement): void {
+  dialog.querySelectorAll<HTMLButtonElement>("[data-close-dialog]").forEach((button) => {
+    button.onclick = () => dialog.close();
+  });
+  if (!dialog.open) dialog.showModal();
+}
+
+/**
+ * The backend reports no stages, so this shows what the user must do and the time spent, not a
+ * made-up progress bar. Closing it only hides it: the elevated process cannot be stopped midway.
+ */
+function showBinding(name: string): void {
+  const dialog = infoDialog();
+  const started = Date.now();
+  dialog.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">BINDING</div><h2 id="info-dialog-title">正在绑定「${escape(name)}」</h2></div><button type="button" class="close-button" data-close-dialog aria-label="先收起，绑定会继续">×</button></div>
+    <div class="binding-progress"><span class="binding-spinner" aria-hidden="true"></span><div><strong>正在读取并验证手表身份</strong><small id="binding-elapsed">已用 0 秒 · 验证最长约 30 秒</small></div></div>
+    <ol class="binding-tips">
+      <li><strong>抬起手腕，让手表亮屏</strong>，放在电脑旁边。手表息屏时广播变少，验证可能超时。</li>
+      <li>如果弹出 Windows 管理员确认，点「是」。</li>
+      <li>验证期间请不要走开。</li>
+    </ol>
+    <p class="form-hint">绑定会读取 Windows 配对时保存的手表密钥，再用手表的实时广播核对。关掉这个窗口不会中断绑定，结束后会提示结果。</p>`;
+  window.clearInterval(bindingTimer);
+  bindingTimer = window.setInterval(() => {
+    const elapsed = document.querySelector<HTMLElement>("#binding-elapsed");
+    if (elapsed) elapsed.textContent = `已用 ${Math.round((Date.now() - started) / 1000)} 秒 · 验证最长约 30 秒`;
+  }, 1000);
+  showInfo(dialog);
+}
+
+function showBindFailed(address: string, name: string, message: string): void {
+  const dialog = infoDialog();
+  dialog.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">NOT BOUND</div><h2 id="info-dialog-title">「${escape(name)}」没有绑定成功</h2></div><button type="button" class="close-button" data-close-dialog aria-label="关闭">×</button></div>
+    <div class="pairing-failure" role="alert"><p>${escape(message)}</p></div>
+    <p class="form-hint">重试前请抬腕让手表亮屏，并放在电脑旁边。</p>
+    <div class="form-actions"><span class="spacer"></span><button type="button" class="button secondary" data-close-dialog>关闭</button><button type="button" class="button primary" id="bind-retry">重试</button></div>`;
+  dialog.querySelector<HTMLButtonElement>("#bind-retry")!.onclick = () => void bindPairedDevice(address);
+  showInfo(dialog);
+}
+
+/** After binding: say what is still missing, so the user is not left wondering. */
 function showBound(id: string): void {
-  const dialog = document.querySelector<HTMLDialogElement>("#info-dialog")!;
+  const dialog = infoDialog();
   const ready = data.credential_configured;
   dialog.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">PAIRED</div><h2 id="info-dialog-title">手表已绑定</h2></div><button type="button" class="close-button" data-close-dialog aria-label="关闭">×</button></div>
-    <p class="form-hint">${ready
+    <p class="form-hint" role="status">${ready
       ? "账户密码已保存，现在锁屏后走远再回来就能解锁。可以按实际信号调整靠近和远离距离。"
       : "还差一步：保存 Windows 账户密码。没有密码时，手表走远再回来也无法解锁。"}</p>
-    <div class="form-actions"><span class="spacer"></span><button type="button" class="button secondary" id="bound-adjust">调整距离</button><button type="button" class="button primary" id="bound-next">${ready ? "查看我的设备" : "去填写密码"}</button></div>`;
-  dialog.querySelector<HTMLButtonElement>("[data-close-dialog]")!.onclick = () => dialog.close();
+    <div class="form-actions"><span class="spacer"></span><button type="button" class="button secondary" id="bound-adjust">调整距离</button><button type="button" class="button primary" id="bound-next">${ready ? "查看设备" : "去填写密码"}</button></div>`;
   dialog.querySelector<HTMLButtonElement>("#bound-adjust")!.onclick = () => { dialog.close(); showDevice(id); };
   dialog.querySelector<HTMLButtonElement>("#bound-next")!.onclick = () => {
     dialog.close();
     if (ready) location.hash = "devices";
     else goToPassword();
   };
-  dialog.showModal();
+  showInfo(dialog);
 }
 
-/** Opens 我的设备 with the account password field focused. */
+/** Opens the 设备 page with the account password field focused. */
 function goToPassword(): void {
   if (currentPage() === "devices") { focusPassword(); return; }
   passwordFocusPending = true;
@@ -461,6 +591,19 @@ async function copyDiagnostics(): Promise<void> {
     // Fall back to a selectable copy the user can take with Ctrl + C.
     showSummary(await summary);
   }
+}
+
+function showPasswordHelp(): void {
+  const dialog = infoDialog();
+  dialog.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">ACCOUNT PASSWORD</div><h2 id="info-dialog-title">重置账户密码</h2></div><button type="button" class="close-button" data-close-dialog aria-label="关闭">×</button></div>
+    <p class="form-hint">此处需填写本机登录账户的密码，不支持 PIN。如忘记密码，可在锁屏界面重置：</p>
+    <ol class="binding-tips">
+      <li>按 Win + L 锁屏，在登录选项中选择密码登录。</li>
+      <li>输入一次错误密码后，点击「重置密码」，按提示完成重置。</li>
+      <li>重置后的新密码即为此处应填写的密码。</li>
+    </ol>
+    <div class="form-actions"><span class="spacer"></span><button type="button" class="button primary" data-close-dialog>确定</button></div>`;
+  showInfo(dialog);
 }
 
 function showSummary(text: string): void {
@@ -608,25 +751,31 @@ function receive(advertisement: Advertisement): void {
     lastSeen: Date.now(),
   };
   observed = [...observed.filter((o) => !sameDevice(o)), next].slice(-200);
-  if (currentPage() === "scan") {
-    const results = document.querySelector<HTMLDivElement>("#scan-results");
-    if (results) {
-      results.innerHTML = scanResults(observed);
-      bindScanRows();
-    }
-    const count = document.querySelector<HTMLElement>(".panel-title h2 > span");
-    if (count) count.textContent = String(observed.length);
-  } else if (currentPage() === "overview" || currentPage() === "devices") {
+  if (currentPage() === "devices") updateScanPanel();
+  if (currentPage() === "overview" || currentPage() === "devices") {
     signals = collectSignals(data, signals, observed);
     patchLive(data, status, signals, currentPage(), showDevice, removeDevice);
   }
 }
 
+/** The former 附近扫描 page is now the 添加手表 section of the 设备 page. */
+function redirectOldScanLink(): void {
+  if (location.hash !== "#scan") return;
+  addOpen = true;
+  history.replaceState(null, "", "#devices");
+}
+
 window.addEventListener("hashchange", () => {
+  redirectOldScanLink();
   render();
   document.querySelector<HTMLElement>("#main")?.focus();
   if (passwordFocusPending) { passwordFocusPending = false; focusPassword(); }
-  if (currentPage() === "scan") void loadPaired().then(rerenderScanPage);
+  if (pendingScroll) {
+    const target = pendingScroll;
+    pendingScroll = "";
+    document.querySelector<HTMLElement>(target)?.scrollIntoView({ block: "start" });
+  }
+  if (currentPage() === "devices") void loadPaired().then(refreshAddPanel);
 });
 window.addEventListener("beforeunload", () => {
   document
@@ -635,6 +784,7 @@ window.addEventListener("beforeunload", () => {
       input.value = "";
     });
 });
+redirectOldScanLink();
 // Known before the first paint, so the banner and autostart switch render correctly.
 setup = await bridge.setupStatus().catch(() => null);
 render();
@@ -656,16 +806,12 @@ if (setup?.running_installed)
     bindChangelog();
     showUpdate(update, toast);
   });
-void loadPaired().then(rerenderScanPage);
+void loadPaired().then(refreshAddPanel);
 await bridge.subscribe(
   receive,
   (scanStatus) => {
     scanning = scanStatus === "running";
-    if (
-      currentPage() === "scan" &&
-      !document.querySelector<HTMLDialogElement>("#device-dialog")?.open
-    )
-      render();
+    updateScanPanel();
     if (scanStatus === "failed")
       toast("扫描未完成，请检查蓝牙适配器与后端记录。");
   },
@@ -674,7 +820,7 @@ await bridge.subscribe(
     pairing = event.status !== "stopped";
     // A completed Windows pairing or a closed window can change the paired list.
     checkPairedList(event);
-    rerenderScanPage();
+    refreshAddPanel();
   },
   () => {
     pairing = false;

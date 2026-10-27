@@ -134,6 +134,12 @@
   margin-left: auto;
   letter-spacing: 0;
 }
+.signal-value em {
+  font-style: normal;
+}
+.signal-value em.stale {
+  color: var(--faint);
+}
 .sparkline {
   width: 100%;
   height: 74px;
@@ -468,4 +474,148 @@ footer {
 footer span {
   font-size: 12px;
   letter-spacing: 0;
+}
+.device-grid > .device-empty {
+  grid-column: 1 / -1;
+}
+.device-empty .text-button {
+  margin-top: 4px;
+}
+/* Collapsible sections on the 设备 page: 添加手表 and 高级. */
+.fold {
+  margin-top: 26px;
+}
+.fold > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  list-style: none;
+  transition: background 0.15s;
+}
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+.fold > summary:hover {
+  background: var(--primary-tint);
+}
+.fold > summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+}
+.fold > summary h2 {
+  font-size: 16px;
+}
+.fold > summary p {
+  font-size: 13px;
+  color: var(--faint);
+  margin-top: 6px;
+  line-height: 1.7;
+}
+.fold-chevron {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted);
+  transform: rotate(90deg);
+  transition: transform 0.2s;
+}
+.fold-chevron svg {
+  width: 18px;
+  height: 18px;
+}
+.fold[open] .fold-chevron {
+  transform: rotate(-90deg);
+}
+.fold-body {
+  margin-top: 16px;
+}
+.fold-body > .panel + .panel,
+.fold-body .pairing-panel + .panel {
+  margin-top: 18px;
+}
+.fold-body .pairing-panel {
+  margin-bottom: 0;
+}
+.panel-title p {
+  font-size: 12px;
+  margin-top: 6px;
+  line-height: 1.7;
+}
+.panel-note {
+  padding: 18px 25px;
+  font-size: 13px;
+}
+.manual-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 25px;
+}
+.manual-panel h2 {
+  font-size: 15px;
+}
+.manual-panel p {
+  font-size: 13px;
+  margin-top: 6px;
+  line-height: 1.7;
+}
+/* Binding dialog. */
+.binding-progress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--primary-tint);
+  color: var(--primary-strong);
+}
+.binding-progress strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.binding-progress small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.binding-spinner {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 3px solid var(--primary-soft);
+  border-top-color: var(--primary);
+  animation: binding-spin 0.9s linear infinite;
+}
+@keyframes binding-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .binding-spinner {
+    animation: none;
+    border-top-color: var(--primary-soft);
+    background: var(--primary);
+    transform: scale(0.45);
+  }
+}
+.binding-tips {
+  margin: 18px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--text);
+}
+.binding-tips strong {
+  font-weight: 600;
 }

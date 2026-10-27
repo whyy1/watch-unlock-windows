@@ -22,18 +22,22 @@ export function collectSignals(
         lastSeen: o.lastSeen,
       }));
   return (next.runtime.devices || [])
-    .filter((d) => d.rssi !== null)
+    .filter((d) => d.rssi !== null || d.last_rssi != null)
     .map((device) => {
       const prior = previous.find((s) => s.deviceId === device.id);
-      const rssi = device.rssi!;
       const at = next.runtime.at_ms || Date.now();
+      const live = device.rssi !== null;
+      const rssi = live ? device.rssi! : device.last_rssi!;
+      const ageMs = live ? 0 : device.last_seen_ms ?? 0;
       return {
         deviceId: device.id,
         rssi,
-        lastSeen: at,
+        lastSeen: at - ageMs,
+        ageMs,
+        // Only live readings extend the chart; a stale value is the same old sample.
         samples:
-          prior?.lastSeen === at
-            ? prior.samples
+          !live || prior?.lastSeen === at
+            ? prior?.samples || []
             : [...(prior?.samples || []), rssi].slice(-30),
       };
     });

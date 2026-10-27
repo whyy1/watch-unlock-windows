@@ -53,6 +53,8 @@ pub fn report() -> Result<Value> {
 
     section(&mut text, "账户与通知");
     line(&mut text, "账户密码", yes_no(crate::enroll::credential_configured(), "已保存", "未保存"));
+    line(&mut text, "Windows 动态锁", yes_no(crate::session::dynamic_lock_enabled(), "已开启", "未开启"));
+    line(&mut text, "合盖时继续检测手表", yes_no(registry::load_settings().unwrap_or_default().scan_with_lid_closed, "已开启", "未开启"));
     let notifications = registry::load_notifications().unwrap_or_default();
     line(&mut text, "通知", yes_no(notifications.enabled, "已启用", "未启用"));
     line(&mut text, "解锁后通知", yes_no(notifications.notify_on_unlock, "是", "否"));
