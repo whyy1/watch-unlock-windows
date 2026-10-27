@@ -30,3 +30,6 @@ licenses/THIRD-PARTY-NOTICES.txt
 
 # Local assistant notes, not published
 CLAUDE.md
+
+# VitePress build cache
+site/.vitepress/cache/
