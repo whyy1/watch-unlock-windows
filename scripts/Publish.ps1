@@ -126,8 +126,14 @@ try {
             if (-not (git tag --list $tag)) { Invoke-Native 'git' @('tag', '-a', $tag, '-m', "Watch Unlock Windows $version") }
             foreach ($remote in $pushRemotes) { Invoke-Native 'git' @('push', $remote, $tag) }
 
-            & gh release view $tag --repo $GitHubRepo *> $null
-            if ($LASTEXITCODE -eq 0) { Write-Output "GitHub release $tag already exists; skipped." }
+            # "release not found" on stderr must not stop the script under ErrorActionPreference=Stop.
+            $savedPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & gh release view $tag --repo $GitHubRepo *> $null
+                $releaseExists = $LASTEXITCODE -eq 0
+            } finally { $ErrorActionPreference = $savedPreference }
+            if ($releaseExists) { Write-Output "GitHub release $tag already exists; skipped." }
             else {
                 Invoke-Native 'gh' (@('release', 'create', $tag, '--repo', $GitHubRepo, '--title', $title,
                     '--notes-file', $notesFile, '--verify-tag') + $assets)
