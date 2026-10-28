@@ -29,6 +29,7 @@ licenses/dependencies.json
 licenses/THIRD-PARTY-NOTICES.txt
 
 # Local assistant notes, not published
+AGENTS.md
 CLAUDE.md
 
 # VitePress build cache
