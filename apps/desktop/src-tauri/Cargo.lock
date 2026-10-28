@@ -4587,7 +4587,7 @@ dependencies = [
 
 [[package]]
 name = "watch-unlock-desktop"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "serde_json",

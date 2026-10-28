@@ -1,11 +1,11 @@
 {
-    "version":  "0.2.8",
-    "notes":  "- 新增：最小化或点击右上角「缩小到托盘」时，窗口收进托盘，并通知后台运行状态。\n- 新增：只运行一个窗口，再次打开时显示已有窗口。\n- 新增：通知发送失败时显示具体原因，服务器响应记入「解锁记录」。\n- 修复：未保存 Bark 密钥时「发送测试通知」无响应；保存和发送前会检查推送地址和设备密钥。\n- 修复：「登录 Windows 后自动启动后台」被安全软件拦截时开关无响应。\n- 修复：切换开关后底部提示不显示。",
-    "pub_date":  "2026-10-28T10:02:57Z",
+    "version":  "0.2.9",
+    "notes":  "- 修复：显示器按电源计划关闭后，走回来自动解锁时显示器不亮。",
+    "pub_date":  "2026-10-28T12:34:05Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRQTZvTUVRUVpXVkxidjV5UTVPOUVtZnJOb3g4c05QODdabVpMaHlGeGQvdnQxczNMZ1IyUWNrRitPSVNOQXBBSGkvUWZQR1R0QTgyNkM4czRocEVlWnQ2OXlMQVM0VUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTgxNzcwCWZpbGU6V2F0Y2ggVW5sb2NrXzAuMi44X3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjIuOAp0V25qRm9SbGZVTjNNaFVxWDdZQ3Nra0VPd29qaExFYzh1cTZxSFh2dTZHRGQ4RlV3Q2ZFcndseWNveWlDbnhXSnBxL250dmEweUwvSzd5cUs3UldDUT09Cg==",
-                                             "url":  "https://gitee.com/why_y1/watch-unlock-windows/releases/download/v0.2.8/WatchUnlock_0.2.8_x64-setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRQTZvTUVRUVpXVkp2WW1pU1pIdW40NlRnY2lFRTdRdHJBcHhtWVgzRktFZWNiZkx6Mk8yMGtpR01qM2ptbnE2OHJ6U05TeW84Q1RscjNzRSt6QStnZGNUK2xCQUhPb0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTkwODM3CWZpbGU6V2F0Y2ggVW5sb2NrXzAuMi45X3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjIuOQpVUmRYRm0xMkYwZ08ra3cyd3Q3RUNET09vdHNubk11cTdleThwRDFYclc0L2dlTzhvQ0JibHdlMk9WZFZiS3VIZS93ZS9sbUdXbGpsYTdKRGlrKzlDQT09Cg==",
+                                             "url":  "https://gitee.com/why_y1/watch-unlock-windows/releases/download/v0.2.9/WatchUnlock_0.2.9_x64-setup.exe"
                                          }
                   }
 }

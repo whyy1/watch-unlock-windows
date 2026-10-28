@@ -60,6 +60,9 @@ fn last_input_tick()->Option<u32> {
     unsafe {GetLastInputInfo(&mut info)}.as_bool().then_some(info.dwTime)
 }
 
+/// How long a submitted unlock keeps the display on; a switched-off monitor takes a few seconds to light up.
+const DISPLAY_HOLD:Duration=Duration::from_secs(8);
+
 fn watcher(sender:&mpsc::SyncSender<ble::Advertisement>,counter:&Arc<AtomicU64>)->Result<ble::AdvertisementWatcher> {
     let output=sender.clone();let count=Arc::clone(counter);
     let watcher=ble::make_watcher(move |adv| {
@@ -113,9 +116,16 @@ pub fn run()->Result<()> {
     let mut lid_closed=false;
     // Why an authorized return is not being submitted: (reasons, since, recorded).
     let mut blocked:Option<(String,Instant,bool)>=None;
+    // Until when this thread holds ES_DISPLAY_REQUIRED after submitting an unlock.
+    let mut display_hold_until:Option<Instant>=None;
     audit::record("backend_started",None,"后台已启动；佩戴与手表锁定状态未知");
     loop {
+        if display_hold_until.is_some_and(|until|Instant::now()>=until) {
+            unsafe {SetThreadExecutionState(ES_CONTINUOUS);}
+            display_hold_until=None;
+        }
         if stop.requested() {
+            if display_hold_until.take().is_some() {unsafe {SetThreadExecutionState(ES_CONTINUOUS);}}
             audit::record("backend_stopped",None,"后台已按请求停止，不再参与解锁");
             let _=registry::write_json("status.json",&json!({"running":false,"at_ms":audit::epoch_ms()}));
             return Ok(());
@@ -342,7 +352,9 @@ pub fn run()->Result<()> {
                 }
                 notify_on_unlock=true;
                 audit::record("unlock_submitted",Some(&device_id),"已向验证过的 Credential Provider 提交一次请求");
-                unsafe {SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED);SetThreadExecutionState(ES_CONTINUOUS);}
+                // Held for a few seconds, then released in the loop so the power plan applies again.
+                unsafe {SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED);}
+                display_hold_until=Some(Instant::now()+DISPLAY_HOLD);
             }
         }
         if write_status {
