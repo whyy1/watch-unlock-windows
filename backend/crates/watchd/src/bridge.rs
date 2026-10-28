@@ -237,7 +237,7 @@ fn remove_device(id: &str) -> Result<Value> {
 
 fn validated_notifications(request: &Value) -> Result<(Notifications, Option<&str>)> {
     let endpoint = text(request,"endpoint")?;
-    crate::notify::validate_https_url(endpoint)?;
+    crate::notify::validate_url(endpoint)?;
     let enabled = request.get("enabled").and_then(Value::as_bool).context("Missing enabled flag")?;
     let key = request.get("device_key").and_then(Value::as_str).filter(|key| !key.is_empty());
     if let Some(key) = key {
@@ -293,7 +293,7 @@ mod tests {
         assert!(!config.notify_on_unlock);
         assert_eq!(key, Some("example-key"));
         for invalid in [json!({"enabled":"false"}), json!({"device_key":"has space"}),
-            json!({"endpoint":"http://api.day.app/push"}), json!({"notify_on_unlock":"yes"})] {
+            json!({"endpoint":"ftp://api.day.app/push"}), json!({"notify_on_unlock":"yes"})] {
             let mut request = valid.clone();
             for (key, value) in invalid.as_object().unwrap() { request[key] = value.clone(); }
             assert!(validated_notifications(&request).is_err());

@@ -63,13 +63,17 @@ fn lower_hex(value: &str, length: usize) -> bool {
     hex(value, length) && !value.bytes().any(|b| b.is_ascii_uppercase())
 }
 
-fn https(value: &str) -> bool {
+fn web_url(value: &str) -> bool {
+    let start = match value.get(..8) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("https://") => 8,
+        _ if value.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://")) => 7,
+        _ => return false,
+    };
     bounded(value, 2048)
-        && value.get(..8).is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
         && !value.chars().any(|c| c.is_whitespace() || matches!(c, '\\' | '#'))
-        && !value[8..].split(['/', '?']).next().unwrap_or("").contains(['@', '%'])
+        && !value[start..].split(['/', '?']).next().unwrap_or("").contains(['@', '%'])
         && url::Url::parse(value).is_ok_and(|url| {
-        url.scheme() == "https" && url.host_str().is_some()
+        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
             && url.username().is_empty() && url.password().is_none()
             && url.fragment().is_none()
     })
@@ -117,7 +121,7 @@ impl Request {
             Self::SaveNotifications {
                 endpoint, device_key, ..
             } => {
-                https(endpoint)
+                web_url(endpoint)
                     && device_key.as_ref().is_none_or(|v| (8..=256).contains(&v.len())
                         && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')))
             }
@@ -186,7 +190,10 @@ mod tests {
         let mut spaced = request.clone();
         spaced["device_key"] = json!("has space");
         assert!(!valid(spaced));
-        for endpoint in ["http://example.invalid", "https://user@example.invalid", "https://example.invalid/#token", "https://example.invalid/a b"] {
+        let mut plain = request.clone();
+        plain["endpoint"] = json!("http://192.168.1.10:8080/push");
+        assert!(valid(plain));
+        for endpoint in ["ftp://example.invalid", "http://user@example.invalid", "https://user@example.invalid", "https://example.invalid/#token", "https://example.invalid/a b"] {
             let mut next = request.clone();
             next["endpoint"] = json!(endpoint);
             assert!(!valid(next));

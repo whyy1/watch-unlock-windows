@@ -1,11 +1,11 @@
 {
-  "version": "0.2.7",
-  "notes": "- 修复：用 Windows 动态锁锁屏后，走回来不会自动解锁。\n- 修复：笔记本合盖接外接显示器时，一直收不到手表信号。概览页新增「合盖时继续检测手表」开关，默认关闭，需要时打开。\n- 「附近扫描」和「我的设备」合并为「设备」页。Apple Watch 点「开始配对」；已在 Windows 配对过的设备直接绑定。扫描附近广播和手动登记收进了「高级」。\n- 绑定时会弹窗提醒手表亮屏、放在电脑旁；绑定失败时写明原因，可以直接重试。\n- 账户密码旁新增「忘记密码？」入口，可查看密码重置方法。\n- 界面底部的提示支持点击复制，便于反馈问题。\n- 手表信号中断时，「设备」页显示最后一次收到信号是几秒前。\n- 「解锁记录」会记下每次锁屏的方式和没能解锁的原因，方便排查。",
-  "pub_date": "2026-10-27T14:08:48Z",
-  "platforms": {
-    "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRQTZvTUVRUVpXVklXT0lNN1pPbzlHWHg2blcyRVQvMmkvV2p5ZTRrSGgvekgyajJLWXlPL3Bmb3pEMm8zV2t5RmI4VWJvSlU0WDdQN3NtN3I5WVZxazlCZ3NVd21aM2c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTEwMTIxCWZpbGU6V2F0Y2ggVW5sb2NrXzAuMi43X3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjIuNwp6V290dVFrMFYrQW5FZCt2M01TWkh1M1lqbzRUNk44YmxoajM0TVdEdjJEZlROYVliNDQrWVp3UW9PM2JuQWppVmZpd3F2ZkVCV0lwSXdvSFRCMG1BUT09Cg==",
-      "url": "https://gitee.com/why_y1/watch-unlock-windows/releases/download/v0.2.7/WatchUnlock_0.2.7_x64-setup.exe"
-    }
-  }
+    "version":  "0.2.8",
+    "notes":  "- 新增：最小化或点击右上角「缩小到托盘」时，窗口收进托盘，并通知后台运行状态。\n- 新增：只运行一个窗口，再次打开时显示已有窗口。\n- 新增：通知发送失败时显示具体原因，服务器响应记入「解锁记录」。\n- 修复：未保存 Bark 密钥时「发送测试通知」无响应；保存和发送前会检查推送地址和设备密钥。\n- 修复：「登录 Windows 后自动启动后台」被安全软件拦截时开关无响应。\n- 修复：切换开关后底部提示不显示。",
+    "pub_date":  "2026-10-28T10:02:57Z",
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRQTZvTUVRUVpXVkxidjV5UTVPOUVtZnJOb3g4c05QODdabVpMaHlGeGQvdnQxczNMZ1IyUWNrRitPSVNOQXBBSGkvUWZQR1R0QTgyNkM4czRocEVlWnQ2OXlMQVM0VUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTgxNzcwCWZpbGU6V2F0Y2ggVW5sb2NrXzAuMi44X3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjIuOAp0V25qRm9SbGZVTjNNaFVxWDdZQ3Nra0VPd29qaExFYzh1cTZxSFh2dTZHRGQ4RlV3Q2ZFcndseWNveWlDbnhXSnBxL250dmEweUwvSzd5cUs3UldDUT09Cg==",
+                                             "url":  "https://gitee.com/why_y1/watch-unlock-windows/releases/download/v0.2.8/WatchUnlock_0.2.8_x64-setup.exe"
+                                         }
+                  }
 }

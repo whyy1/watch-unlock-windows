@@ -25,18 +25,21 @@ export function validatePassword(password: string, hasIdentity: boolean): void {
     throw new Error("请输入有效的 Windows 账户密码，长度不能超过 1024 字节。");
 }
 
-function validateHttps(value: string): void {
+function validateWebUrl(value: string): void {
   let url: URL;
-  try { url = new URL(value); } catch { throw new Error("请输入完整有效的 HTTPS 地址。"); }
-  const authority = value.slice(8).split(/[/?]/, 1)[0];
-  if (!/^https:\/\//i.test(value) || byteLength(value) > 2048 ||
+  try { url = new URL(value); } catch { throw new Error("请输入完整的地址，以 http:// 或 https:// 开头。"); }
+  const scheme = /^https?:\/\//i.exec(value);
+  const authority = value.slice(scheme ? scheme[0].length : 0).split(/[/?]/, 1)[0];
+  if (!scheme || byteLength(value) > 2048 ||
       /[\s\\#]/u.test(value) || controls.test(value) || /[%@]/.test(authority) ||
-      url.protocol !== "https:" || !url.hostname || url.username || url.password)
-    throw new Error("通知地址必须为 HTTPS，不能带账户信息、片段或空白。");
+      (url.protocol !== "https:" && url.protocol !== "http:") || !url.hostname || url.username || url.password)
+    throw new Error("通知地址要以 http:// 或 https:// 开头，不能带账户信息、# 片段或空格。");
 }
 
-export function validateNotifications(endpoint: string, barkKey: string): void {
-  validateHttps(endpoint);
+export function validateNotifications(endpoint: string, barkKey: string, keySaved: boolean): void {
+  if (!endpoint.trim()) throw new Error("请填写推送 API 地址。");
+  if (!barkKey && !keySaved) throw new Error("请填写 Bark 设备密钥。");
+  validateWebUrl(endpoint);
   // The usual mistake is pasting the whole sample URL from the Bark app instead of its key.
   if (barkKey && /[/:.]/.test(barkKey))
     throw new Error("只填 Bark 网址中域名后面的那一段密钥，不要填整个网址。例如 https://api.day.app/YourKey123/推送内容 里填 YourKey123。");

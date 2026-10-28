@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Watch Unlock",
   "mainBinaryName": "WatchUnlock",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "identifier": "org.watchunlock.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",

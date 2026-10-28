@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -37,11 +38,35 @@ fn hidden(mut command: Command) -> Command {
     command
 }
 
-fn run(tool: &str, args: &[&str]) -> bool {
+/// How long a reg.exe or schtasks.exe call may take. Security software that guards startup
+/// entries can hold reg.exe while it asks the user, which used to leave the switch stuck.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(Debug, PartialEq, Eq)]
+enum Ran { Succeeded, Failed, TimedOut }
+
+fn run_tool(tool: &str, args: &[&str]) -> Ran { run_within(tool, args, TOOL_TIMEOUT) }
+
+fn run_within(tool: &str, args: &[&str], limit: Duration) -> Ran {
     let mut command = Command::new(system_tool(tool));
     command.args(args);
-    hidden(command).status().is_ok_and(|status| status.success())
+    let Ok(mut child) = hidden(command).spawn() else { return Ran::Failed };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return if status.success() { Ran::Succeeded } else { Ran::Failed },
+            Ok(None) if started.elapsed() < limit => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ran::TimedOut;
+            }
+            Err(_) => return Ran::Failed,
+        }
+    }
 }
+
+fn run(tool: &str, args: &[&str]) -> bool { run_tool(tool, args) == Ran::Succeeded }
 
 fn current_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
@@ -103,13 +128,32 @@ pub async fn set_autostart(enabled: bool) -> Result<SetupStatus, String> {
         }
         let quoted = format!("\"{}\"", supervisor.display());
         let changed = if enabled {
-            run("reg.exe", &["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &quoted, "/f"])
+            run_tool("reg.exe", &["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &quoted, "/f"])
+        } else if run("reg.exe", &["query", RUN_KEY, "/v", RUN_VALUE]) {
+            run_tool("reg.exe", &["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
         } else {
-            !run("reg.exe", &["query", RUN_KEY, "/v", RUN_VALUE])
-                || run("reg.exe", &["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
+            Ran::Succeeded
         };
-        if !changed { return Err("autostart_failed".into()); }
+        match changed {
+            Ran::Succeeded => {}
+            Ran::Failed => return Err("autostart_failed".into()),
+            Ran::TimedOut => return Err("autostart_timeout".into()),
+        }
         Ok(current_status())
     }).await.map_err(|_| "setup_task_failed")?
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_that_hangs_is_stopped_instead_of_blocking_the_switch() {
+        let started = Instant::now();
+        assert_eq!(run_within("ping.exe", &["-n", "30", "127.0.0.1"], Duration::from_millis(500)), Ran::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(run_within("reg.exe", &["query", r"HKCU\Software\WatchUnlockNoSuchKey"], TOOL_TIMEOUT), Ran::Failed);
+        assert_eq!(run_within("reg.exe", &["query", r"HKCU\Software"], TOOL_TIMEOUT), Ran::Succeeded);
+    }
+}

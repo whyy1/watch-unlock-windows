@@ -111,6 +111,11 @@ export async function setupStatus(): Promise<SetupStatus | null> {
   return native ? invoke<SetupStatus>("setup_status") : null;
 }
 
+/** Hides the window to the notification area, as minimizing does. */
+export async function hideToTray(): Promise<void> {
+  if (native) await invoke("hide_to_tray");
+}
+
 /** Writes the diagnostics file into Downloads and returns its path. */
 export async function exportDiagnostics(): Promise<string> {
   if (!native) throw new Error("浏览器预览不能导出诊断信息。");
@@ -126,5 +131,11 @@ export async function diagnosticsSummary(): Promise<string> {
 
 export async function setAutostart(enabled: boolean): Promise<SetupStatus> {
   try { return await invoke<SetupStatus>("set_autostart", { enabled }); }
-  catch { throw new Error("开机自启设置失败，请确认已安装到本机。"); }
+  catch (error) {
+    if (error === "autostart_timeout")
+      throw new Error("开机自启设置超时，修改启动项可能被安全软件拦截了。请在安全软件里允许 Watch Unlock 修改启动项，再重试。");
+    if (error === "autostart_failed")
+      throw new Error("开机自启设置失败，修改启动项可能被安全软件拦截了。请在安全软件里允许 Watch Unlock 修改启动项，再重试。");
+    throw new Error("开机自启设置失败，请确认已安装到本机。");
+  }
 }

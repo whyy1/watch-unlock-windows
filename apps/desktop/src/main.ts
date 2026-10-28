@@ -170,6 +170,8 @@ function renderBanner(): void {
 function render(): void {
   const page = currentPage();
   document.querySelector<HTMLDivElement>("#app")!.innerHTML = shell(page);
+  document.querySelector<HTMLButtonElement>("#hide-to-tray")
+    ?.addEventListener("click", () => void act(() => bridge.hideToTray()));
   renderBanner();
   const content = document.querySelector<HTMLDivElement>("#page-content")!;
   if (page === "overview") content.innerHTML = overview(data, status, signals, setup);
@@ -250,12 +252,13 @@ function bind(): void {
     const enabled = input.checked;
     input.disabled = true;
     void act(async () => {
+      // render() rebuilds the page and its toast, so the notice goes after it.
       try {
         setup = await bridge.setAutostart(enabled);
-        toast(enabled ? "已开启：以后每次登录 Windows 都会自动启动后台。" : "已关闭开机自启；需要时请手动启动后台。");
       } finally {
         render();
       }
+      toast(enabled ? "已开启：以后每次登录 Windows 都会自动启动后台。" : "已关闭开机自启；需要时请手动启动后台。");
     });
   });
   document.querySelector<HTMLInputElement>("#lid-scan")?.addEventListener("change", (event) => {
@@ -265,10 +268,10 @@ function bind(): void {
     void act(async () => {
       try {
         data = await bridge.request<Snapshot>({ op: "save_settings", scan_with_lid_closed: enabled });
-        toast(enabled ? "已开启：合盖后会继续检测手表。" : "已关闭：合盖后停止检测手表，开盖后恢复。");
       } finally {
         render();
       }
+      toast(enabled ? "已开启：合盖后会继续检测手表。" : "已关闭：合盖后停止检测手表，开盖后恢复。");
     });
   });
   document.querySelector<HTMLButtonElement>("#daemon-toggle")?.addEventListener(
@@ -338,12 +341,20 @@ function bind(): void {
       (event) =>
         void act(async () => {
           const button = event.currentTarget as HTMLButtonElement;
+          const values = new FormData(button.form ?? undefined);
+          if (!data.notifications.endpoint || !field(values, "endpoint"))
+            throw new Error("请先填写推送 API 地址并保存。");
+          if (!data.notifications.configured)
+            throw new Error("请先填写 Bark 设备密钥并保存。");
+          const label = button.textContent;
           button.disabled = true;
+          button.textContent = "正在发送…";
           try {
             data = await bridge.request<Snapshot>({ op: "notify_test" });
             toast("测试通知已被 Bark 接受，请检查手机或手表。");
           } finally {
             button.disabled = false;
+            button.textContent = label;
           }
         }),
     );
@@ -717,7 +728,7 @@ function saveNotifications(event: SubmitEvent): void {
     const values = new FormData(form);
     const endpoint = field(values, "endpoint");
     try {
-      validateNotifications(endpoint, field(values, "device_key"));
+      validateNotifications(endpoint, field(values, "device_key"), data.notifications.configured);
       await bridge.request({
         op: "save_notifications",
         endpoint,

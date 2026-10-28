@@ -25,12 +25,16 @@ test("password requires a bound identity and respects the backend UTF-8 byte lim
 });
 
 test("notification validation rejects unsafe URLs and malformed Bark keys", () => {
-  assert.doesNotThrow(() => validateNotifications("https://example.invalid/push?tag=watch", "test_key-123"));
-  for (const endpoint of ["http://example.invalid", "https://@example.invalid", "https://example.invalid/#token", "https://example.invalid/a b"])
-    assert.throws(() => validateNotifications(endpoint, ""));
-  assert.throws(() => validateNotifications("https://example.invalid", "short"));
-  assert.throws(() => validateNotifications("https://example.invalid", "has space in it"));
+  assert.doesNotThrow(() => validateNotifications("https://example.invalid/push?tag=watch", "test_key-123", false));
+  assert.doesNotThrow(() => validateNotifications("http://192.168.1.10:8080/push", "test_key-123", false));
+  for (const endpoint of ["ftp://example.invalid", "http://@example.invalid", "https://@example.invalid", "https://example.invalid/#token", "https://example.invalid/a b"])
+    assert.throws(() => validateNotifications(endpoint, "", true));
+  assert.throws(() => validateNotifications("", "test_key-123", true), /推送 API 地址/);
+  assert.throws(() => validateNotifications("https://example.invalid", "", false), /设备密钥/);
+  assert.doesNotThrow(() => validateNotifications("https://example.invalid", "", true));
+  assert.throws(() => validateNotifications("https://example.invalid", "short", false));
+  assert.throws(() => validateNotifications("https://example.invalid", "has space in it", false));
   // A pasted sample URL gets the "key only" explanation, not the generic format message.
-  assert.throws(() => validateNotifications("https://example.invalid", "https://api.day.app/YourKey123/hello"), /不要填整个网址/);
-  assert.throws(() => validateNotifications("https://example.invalid", "api.day.app/YourKey123"), /不要填整个网址/);
+  assert.throws(() => validateNotifications("https://example.invalid", "https://api.day.app/YourKey123/hello", false), /不要填整个网址/);
+  assert.throws(() => validateNotifications("https://example.invalid", "api.day.app/YourKey123", false), /不要填整个网址/);
 });

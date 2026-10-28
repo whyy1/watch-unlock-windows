@@ -57,7 +57,7 @@ button {
   cursor: pointer;
 }
 button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.5;
 }
 a {
@@ -256,6 +256,14 @@ h3 {
   align-items: center;
   gap: 7px;
   color: var(--muted);
+}
+.tray-button {
+  min-height: 32px;
+  padding: 6px 12px;
+}
+.tray-button svg {
+  width: 15px;
+  height: 15px;
 }
 main {
   margin-left: 222px;

@@ -10,6 +10,7 @@ const paths: Record<string, string> = {
   arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
   signal: '<path d="M4 19v-3M9 19v-7M14 19V8M19 19V4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  tray: '<path d="M12 4v10m-4-4 4 4 4-4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
   shield:
     '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
   github:
