@@ -269,7 +269,7 @@ const pairingFailures: Record<string, { text: string; bluetooth?: boolean }> = {
   advertising_busy: { text: "蓝牙广播被占用：电脑同一时间能发出的蓝牙广播有限，Windows 的「附近共享」「手机连接」或其他蓝牙程序可能正在使用。请在“设置 → 系统 → 附近共享”里关闭附近共享，退出手机连接等程序后重试。", bluetooth: true },
   advertising_blocked: { text: "这台电脑禁止程序发出蓝牙广播，通常是公司电脑的管理策略。需要管理员放开限制，软件无法绕过。" },
   timeout: {
-    text: "120 秒内没有完成配对。如果手表上看不到这台电脑，或之前配对过：先在 Windows 蓝牙设置里删除旧的配对，并在手表上忽略这台电脑，然后重试。出现过 Windows「连接失败」弹窗的，重启电脑后再配对。",
+    text: "120 秒内没有完成配对。如果手表上看不到这台电脑，或之前配对过：先在 Windows 蓝牙设置里删除旧的配对，并在手表上忽略这台电脑，然后重试。出现过 Windows「连接失败」弹窗的，重启电脑后再配对。Windows 要求输入 PIN 时，填手表屏幕上显示的 6 位数字。",
     bluetooth: true,
   },
   cancelled: { text: "配对已取消。" },
@@ -305,7 +305,7 @@ export function pairingPanel(
   const steps: [string, string, boolean, boolean][] = [
     ["开启配对窗口", "先点「开始配对」，手表才能搜到电脑。电脑会临时模拟成一个蓝牙配件，持续 120 秒。", pairing || paired, !pairing && !paired],
     ["在手表上选择这台电脑", "在<b>手表</b>上（不是 iPhone，也不是 Windows 设置）打开「设置 → 蓝牙」，等这台电脑出现后点它。", connected || paired, advertising && !connected && !paired],
-    ["在电脑上允许配对", "电脑右下角会弹出 Windows 配对通知，点「允许」或「配对」。开着勿扰或专注模式时通知不会弹出，请打开通知中心（Win + N）查找。如果弹出 Windows 的「为设备配对 · 未知设备 · 连接失败」，说明 Windows 蓝牙卡在了上一次的配对状态：点「关闭」，在手表上忽略这台电脑，然后重启电脑再配对。", paired, connected && !paired],
+    ["在电脑上允许配对", "电脑右下角会弹出 Windows 配对通知，点「允许」或「配对」。如果弹出的是输入 PIN 的窗口，配对码在<b>手表屏幕</b>上，填入手表显示的 6 位数字，不要填 000000。开着勿扰或专注模式时通知不会弹出，请打开通知中心（Win + N）查找。如果弹出 Windows 的「为设备配对 · 未知设备 · 连接失败」，说明 Windows 蓝牙卡在了上一次的配对状态：点「关闭」，在手表上忽略这台电脑，然后重启电脑再配对。", paired, connected && !paired],
     ["绑定手表", bound ? "已绑定，可以在上方的手表卡片里按实际信号调整靠近和远离阈值。"
       : binding ? "正在绑定：让手表亮屏并留在电脑旁；如果弹出 Windows 管理员确认，点「是」。最长约 30 秒。"
       : "配对完成后会自动开始绑定，读取这块手表的身份密钥。绑定时请让手表亮屏、留在电脑旁；如果弹出 Windows 管理员确认，点「是」。", bound, paired && !bound],

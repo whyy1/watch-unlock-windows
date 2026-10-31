@@ -8,6 +8,7 @@ use windows::Devices::Bluetooth::Advertisement::{
     BluetoothLEAdvertisementWatcher as WinRtAdvertisementWatcher, BluetoothLEScanningMode,
     BluetoothLEAdvertisementWatcherStoppedEventArgs,
 };
+use windows::Devices::Bluetooth::BluetoothError;
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::Storage::Streams::DataReader;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -82,6 +83,8 @@ pub struct AdvertisementWatcher {
     received_token: Option<EventRegistrationToken>,
     stopped_token: Option<EventRegistrationToken>,
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The BluetoothError Windows gave when it stopped the watcher on its own.
+    stop_error: std::sync::Arc<std::sync::atomic::AtomicI32>,
 }
 
 impl AdvertisementWatcher {
@@ -92,6 +95,11 @@ impl AdvertisementWatcher {
 
     pub fn is_running(&self) -> bool {
         !self.stopped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Why Windows stopped the watcher, for the history line. `Success` when it gave no reason.
+    pub fn stop_error(&self) -> BluetoothError {
+        BluetoothError(self.stop_error.load(std::sync::atomic::Ordering::Acquire))
     }
 
     pub fn shutdown(&mut self) -> windows::core::Result<()> {
@@ -141,8 +149,13 @@ where
     let received_token = watcher.Received(&cb)?;
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped_output = std::sync::Arc::clone(&stopped);
+    let stop_error = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(BluetoothError::Success.0));
+    let stop_error_output = std::sync::Arc::clone(&stop_error);
     let stopped_token = watcher.Stopped(&TypedEventHandler::new(
-        move |_: &Option<WinRtAdvertisementWatcher>, _: &Option<BluetoothLEAdvertisementWatcherStoppedEventArgs>| {
+        move |_: &Option<WinRtAdvertisementWatcher>, args: &Option<BluetoothLEAdvertisementWatcherStoppedEventArgs>| {
+            if let Some(error) = args.as_ref().and_then(|args| args.Error().ok()) {
+                stop_error_output.store(error.0, std::sync::atomic::Ordering::Release);
+            }
             stopped_output.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }))?;
@@ -151,7 +164,24 @@ where
         received_token: Some(received_token),
         stopped_token: Some(stopped_token),
         stopped,
+        stop_error,
     })
+}
+
+/// Fixed Chinese label for a Windows Bluetooth error; never the WinRT error text.
+pub fn error_label(error: BluetoothError) -> &'static str {
+    match error {
+        BluetoothError::Success => "无",
+        BluetoothError::RadioNotAvailable => "蓝牙不可用",
+        BluetoothError::ResourceInUse => "资源被占用",
+        BluetoothError::NotSupported => "不支持",
+        BluetoothError::TransportNotSupported => "传输方式不支持",
+        BluetoothError::DisabledByPolicy => "被策略禁止",
+        BluetoothError::DisabledByUser => "被用户关闭",
+        BluetoothError::ConsentRequired => "需要授权",
+        BluetoothError::DeviceNotConnected => "设备未连接",
+        _ => "其他错误",
+    }
 }
 
 /// 扫描广播，每条经回调送出；`stop_after` 秒后停止（None = 直到 Ctrl+C）。

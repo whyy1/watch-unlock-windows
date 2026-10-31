@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64,Ordering};
 use std::time::{Duration,Instant,SystemTime};
 use watch_unlock_domain::{Decision,Session};
 use windows::core::PCWSTR;
+use windows::Devices::Bluetooth::BluetoothError;
 use windows::Win32::Foundation::{CloseHandle,GetLastError,ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Com::{CoInitializeEx,COINIT_MULTITHREADED};
 use windows::Win32::System::Power::{SetThreadExecutionState,ES_CONTINUOUS,ES_DISPLAY_REQUIRED};
@@ -62,6 +63,12 @@ fn last_input_tick()->Option<u32> {
 
 /// How long a submitted unlock keeps the display on; a switched-off monitor takes a few seconds to light up.
 const DISPLAY_HOLD:Duration=Duration::from_secs(8);
+
+/// History line for a scanner Windows stopped, naming its reason when it gave one.
+fn scanner_stopped_detail(error:BluetoothError)->String {
+    if error==BluetoothError::Success {return "扫描器已停止，旧距离证据已立即撤销".into();}
+    format!("扫描器已停止（Windows 报告：{}），旧距离证据已立即撤销",ble::error_label(error))
+}
 
 fn watcher(sender:&mpsc::SyncSender<ble::Advertisement>,counter:&Arc<AtomicU64>)->Result<ble::AdvertisementWatcher> {
     let output=sender.clone();let count=Arc::clone(counter);
@@ -199,9 +206,10 @@ pub fn run()->Result<()> {
         }
         // Revoke as soon as a stopped adapter is observed, independently of the
         // slower rebuild backoff. No queued packet can revive a failed scanner.
-        if scanner.as_ref().is_some_and(|scanner|!scanner.is_running()) {
+        if let Some(stopped)=scanner.as_ref().filter(|scanner|!scanner.is_running()) {
+            let detail=scanner_stopped_detail(stopped.stop_error());
             scanner=None;invalidate=true;revoked=true;
-            audit::record("scanner_unavailable",None,"扫描器已停止，旧距离证据已立即撤销");
+            audit::record("scanner_unavailable",None,&detail);
         }
         if last_housekeeping.elapsed()>=Duration::from_secs(1) {
             last_housekeeping=now;
@@ -236,7 +244,8 @@ pub fn run()->Result<()> {
                 && last_rebuild.elapsed()>Duration::from_secs(5) {
                 drop(scanner.take());invalidate=true;revoked=true;last_rebuild=now;
                 scanner=watcher(&adv_tx,&counter).ok();
-                audit::record("scanner_reset",None,"扫描器已重建，旧距离证据已撤销");
+                audit::record("scanner_reset",None,if scanner.is_some() {"扫描器已重建，旧距离证据已撤销"}
+                    else {"扫描器重建失败，5 秒后重试"});
             }
         }
         if invalidate {
@@ -373,5 +382,19 @@ pub fn run()->Result<()> {
                 "submitted_this_lock":submissions.submitted(),"devices":status}));
         }
         std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scanner_stop_names_the_windows_reason_only_when_given() {
+        assert_eq!(scanner_stopped_detail(BluetoothError::Success),"扫描器已停止，旧距离证据已立即撤销");
+        assert_eq!(scanner_stopped_detail(BluetoothError::RadioNotAvailable),
+            "扫描器已停止（Windows 报告：蓝牙不可用），旧距离证据已立即撤销");
+        assert_eq!(scanner_stopped_detail(BluetoothError(9999)),
+            "扫描器已停止（Windows 报告：其他错误），旧距离证据已立即撤销");
     }
 }

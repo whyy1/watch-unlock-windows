@@ -408,18 +408,7 @@ pub fn bluetooth_report() -> Vec<(&'static str, Cow<'static, str>)> {
 /// One history line on how the advertisement went: the watch can only find a PC whose full
 /// heart-rate advertisement is on air. Built from counts and fixed labels only.
 fn advertising_summary(state: &Snapshot) -> String {
-    let error = match BluetoothError(state.advertising_error) {
-        BluetoothError::Success => "无",
-        BluetoothError::RadioNotAvailable => "蓝牙不可用",
-        BluetoothError::ResourceInUse => "资源被占用",
-        BluetoothError::NotSupported => "不支持",
-        BluetoothError::TransportNotSupported => "传输方式不支持",
-        BluetoothError::DisabledByPolicy => "被策略禁止",
-        BluetoothError::DisabledByUser => "被用户关闭",
-        BluetoothError::ConsentRequired => "需要授权",
-        BluetoothError::DeviceNotConnected => "设备未连接",
-        _ => "其他错误",
-    };
+    let error = crate::ble::error_label(BluetoothError(state.advertising_error));
     format!("配对广播：完整广播 {} 秒{}，重建 {} 次，Windows 报告的错误：{}",
         state.advertised_seconds,
         if state.limited { "，曾出现广播内容不完整（手表可能认不出）" } else { "" },
@@ -463,7 +452,7 @@ fn outcome_detail(paired: bool, reason: &str, watch_connected: bool) -> Option<(
         "advertising_busy" => "配对未完成：蓝牙广播被其他程序或系统功能占用（已自动重试 3 次）",
         "advertising_blocked" => "配对未完成：蓝牙广播被系统策略或隐私设置禁止",
         "timeout" if watch_connected => "配对未完成：手表已连接，但 Windows 没有确认配对（可能漏点了配对通知）",
-        "timeout" => "配对未完成：配对窗口内手表没有连接这台电脑",
+        "timeout" => "配对未完成：手表没有连接这台电脑，或连接后没有完成配对",
         "cancelled" => return None,
         _ => "配对未完成：配对窗口无法开启",
     };
