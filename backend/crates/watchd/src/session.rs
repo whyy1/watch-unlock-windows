@@ -131,6 +131,45 @@ pub fn current_session_locked() -> anyhow::Result<bool> {
     }
 }
 
+/// Whether no screen or Remote Desktop client shows this process's session: after a closed
+/// Remote Desktop connection, `tsdiscon` or switching user. The physical screen then shows a
+/// logon screen in another session.
+pub fn current_session_disconnected() -> bool {
+    use windows::Win32::System::RemoteDesktop::{WTSConnectState, WTSDisconnected, WTS_CONNECTSTATE_CLASS};
+    unsafe {
+        let mut buffer = windows::core::PWSTR::null();
+        let mut bytes = 0u32;
+        if WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSConnectState,
+            &mut buffer, &mut bytes).is_err() || buffer.is_null() {
+            return false;
+        }
+        let disconnected = bytes as usize >= std::mem::size_of::<WTS_CONNECTSTATE_CLASS>()
+            && std::ptr::read_unaligned(buffer.0 as *const WTS_CONNECTSTATE_CLASS) == WTSDisconnected;
+        WTSFreeMemory(buffer.0 as *mut core::ffi::c_void);
+        disconnected
+    }
+}
+
+/// The session attached to the physical screen and keyboard, if any.
+pub fn console_session() -> Option<u32> {
+    let session = unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() };
+    (session != u32::MAX).then_some(session)
+}
+
+/// Whether a user is signed in to `session`; `None` when Windows does not say.
+pub fn session_has_user(session: u32) -> Option<bool> {
+    use windows::Win32::System::RemoteDesktop::WTSUserName;
+    unsafe {
+        let mut buffer = windows::core::PWSTR::null();
+        let mut bytes = 0u32;
+        WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, WTSUserName, &mut buffer, &mut bytes).ok()?;
+        if buffer.is_null() { return None; }
+        let signed_in = !buffer.to_string().unwrap_or_default().is_empty();
+        WTSFreeMemory(buffer.0 as *mut core::ffi::c_void);
+        Some(signed_in)
+    }
+}
+
 /// 微软账户身份缓存（注册表读取较慢，启动后只查一次）。
 static MSA_IDENTITY: std::sync::OnceLock<Option<(String, String)>> = std::sync::OnceLock::new();
 

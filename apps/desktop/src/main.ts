@@ -743,7 +743,11 @@ function saveNotifications(event: SubmitEvent): void {
     }
     await refresh();
     render();
-    toast("通知设置已保存；可用“发送测试通知”验证。");
+    // The backend drops a key pasted into the address and adds a missing /push.
+    const saved = data.notifications.endpoint;
+    toast(saved && saved !== endpoint
+      ? `通知设置已保存，推送地址已改为 ${saved}。设备密钥不用写进地址，可以点“发送测试通知”验证。`
+      : "通知设置已保存；可用“发送测试通知”验证。");
   });
 }
 

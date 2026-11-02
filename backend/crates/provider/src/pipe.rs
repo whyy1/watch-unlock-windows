@@ -1,6 +1,11 @@
 //! 与守护的命名管道通信（provider 侧客户端）。
 //! Trust is anchored in the protected Program Files folder this DLL was registered from, and in
 //! the locked session's user SID.
+//!
+//! Normally the logon screen and the daemon share a session. After a closed Remote Desktop
+//! connection (or `tsdiscon`, switch user) the user's session is disconnected and the physical
+//! screen shows an empty logon session instead; only that screen then talks to the daemons of
+//! the disconnected sessions, and relays its keyboard and mouse input, which they cannot see.
 
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use std::time::Duration;
@@ -24,9 +29,11 @@ use windows::Win32::System::EventLog::{
     DeregisterEventSource, RegisterEventSourceW, ReportEventW, EVENTLOG_WARNING_TYPE,
 };
 use windows::Win32::System::RemoteDesktop::{
-    ProcessIdToSessionId, WTSDomainName, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
-    WTS_CURRENT_SERVER_HANDLE, WTS_INFO_CLASS,
+    ProcessIdToSessionId, WTSDisconnected, WTSDomainName, WTSEnumerateSessionsW, WTSFreeMemory,
+    WTSGetActiveConsoleSessionId, WTSQuerySessionInformationW, WTSUserName, WTS_CURRENT_SERVER_HANDLE,
+    WTS_INFO_CLASS, WTS_SESSION_INFOW,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::Security::{
     EqualSid, GetTokenInformation, LookupAccountNameW, TokenUser, PSID, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
 };
@@ -51,6 +58,10 @@ pub struct PipeMsg {
     pub username: Option<String>,
     #[serde(default)]
     pub domain: Option<String>,
+    /// GetTickCount value of this logon screen's last keyboard or mouse input; sent only to the
+    /// daemon of a disconnected session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<u32>,
 }
 
 impl Drop for PipeMsg {
@@ -122,17 +133,61 @@ impl Drop for FrameReader {
     }
 }
 
-/// 当前会话的管道全名（LogonUI 与锁定的用户会话同 SessionId）。
-pub fn pipe_name() -> String {
+/// 指定会话的管道全名（守护按自己的 SessionId 命名）。
+fn pipe_name(session: u32) -> String {
     #[cfg(test)]
     if let Ok(name) = std::env::var("WATCH_UNLOCK_PIPE") {
         return format!("\\\\.\\pipe\\{name}");
     }
-    let mut sid = 0u32;
-    unsafe {
-        let _ = ProcessIdToSessionId(std::process::id(), &mut sid);
+    format!("\\\\.\\pipe\\WatchUnlockWindows-{session}")
+}
+
+fn own_session() -> u32 {
+    let mut session = 0u32;
+    unsafe { let _ = ProcessIdToSessionId(std::process::id(), &mut session); }
+    session
+}
+
+/// Sessions whose daemon this logon screen talks to. A logon screen inside a user's session
+/// serves that session only. The empty logon session on the physical screen serves the
+/// disconnected user sessions, which signing in there reconnects. Any other logon screen,
+/// such as a Remote Desktop one, never qualifies for them.
+fn pick_targets(own: u32, own_has_user: bool, console: Option<u32>, sessions: &[(u32, bool, bool)]) -> Vec<u32> {
+    if own_has_user || console != Some(own) { return vec![own]; }
+    let disconnected: Vec<u32> = sessions.iter()
+        .filter(|&&(id, disconnected, has_user)| id != own && disconnected && has_user)
+        .map(|&(id, ..)| id).collect();
+    if disconnected.is_empty() { vec![own] } else { disconnected }
+}
+
+fn targets() -> Vec<u32> {
+    let own = own_session();
+    #[cfg(test)]
+    if std::env::var("WATCH_UNLOCK_PIPE").is_ok() { return vec![own]; }
+    let own_has_user = wts_text(own, WTSUserName).is_some();
+    let console = unsafe { WTSGetActiveConsoleSessionId() };
+    let console = (console != u32::MAX).then_some(console);
+    let mut sessions = Vec::new();
+    if !own_has_user && console == Some(own) {
+        unsafe {
+            let mut info: *mut WTS_SESSION_INFOW = std::ptr::null_mut();
+            let mut count = 0u32;
+            if WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &mut info, &mut count).is_ok() && !info.is_null() {
+                for entry in std::slice::from_raw_parts(info, count as usize) {
+                    sessions.push((entry.SessionId, entry.State == WTSDisconnected,
+                        wts_text(entry.SessionId, WTSUserName).is_some()));
+                }
+                WTSFreeMemory(info.cast());
+            }
+        }
     }
-    format!("\\\\.\\pipe\\WatchUnlockWindows-{}", sid)
+    pick_targets(own, own_has_user, console, &sessions)
+}
+
+/// GetTickCount value of this session's last keyboard or mouse input.
+fn last_input_tick() -> Option<u32> {
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe { GetLastInputInfo(&mut info) }.as_bool().then_some(info.dwTime)
 }
 
 struct OwnedHandle(HANDLE);
@@ -172,6 +227,20 @@ fn report(stage: &'static str) {
         let Ok(log) = RegisterEventSourceW(PCWSTR::null(), PCWSTR(source.as_ptr())) else { return };
         let strings = [PCWSTR(text.as_ptr())];
         let _ = ReportEventW(log, EVENTLOG_WARNING_TYPE, 0, 1000, None, 0, Some(&strings), None);
+        let _ = DeregisterEventSource(log);
+    }
+}
+
+/// Records in the Application event log that Windows refused a credential this provider
+/// submitted. Only the NTSTATUS code; never the account or password.
+pub(crate) fn report_rejected_logon(status: i32) {
+    let source: Vec<u16> = "WatchUnlockWindows\0".encode_utf16().collect();
+    let text: Vec<u16> = format!("Watch Unlock provider: Windows rejected the submitted logon, NTSTATUS 0x{status:08X}\0")
+        .encode_utf16().collect();
+    unsafe {
+        let Ok(log) = RegisterEventSourceW(PCWSTR::null(), PCWSTR(source.as_ptr())) else { return };
+        let strings = [PCWSTR(text.as_ptr())];
+        let _ = ReportEventW(log, EVENTLOG_WARNING_TYPE, 0, 1001, None, 0, Some(&strings), None);
         let _ = DeregisterEventSource(log);
     }
 }
@@ -275,7 +344,8 @@ fn check_server(pipe: HANDLE) -> Result<OwnedHandle, &'static str> {
 /// Read-only trust inspection, also used by isolated negative integration tests.
 pub fn is_trusted_server(pipe: HANDLE) -> bool { trusted_server(pipe).is_some() }
 
-fn connect(name: &str, verifier: fn(HANDLE) -> Option<OwnedHandle>) -> Option<TrustedConnection> {
+/// Opens `name` only when its server runs in `target`, the session chosen by [`targets`].
+fn connect(name: &str, target: u32, verifier: fn(HANDLE) -> Option<OwnedHandle>) -> Option<TrustedConnection> {
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         let handle = CreateFileW(
@@ -289,24 +359,59 @@ fn connect(name: &str, verifier: fn(HANDLE) -> Option<OwnedHandle>) -> Option<Tr
             None,
         ).ok()?;
         let mut server_session = 0;
-        let mut own_session = 0;
-        let same_session = GetNamedPipeServerSessionId(handle, &mut server_session).is_ok()
-            && ProcessIdToSessionId(std::process::id(), &mut own_session).is_ok()
-            && server_session == own_session;
+        let expected_session = GetNamedPipeServerSessionId(handle, &mut server_session).is_ok()
+            && server_session == target;
         // A hostile server must not keep the DLL worker in a blocking write.
         let mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
         let pipe = OwnedHandle(handle);
-        if !same_session { report("pipe_session"); return None; }
+        if !expected_session { report("pipe_session"); return None; }
         let process = verifier(handle)?;
         SetNamedPipeHandleState(handle, Some(&mode), None, None).ok()?;
         Some(TrustedConnection { pipe, _process: process })
     }
 }
 
-fn receive_message(handle: HANDLE, stop: &AtomicBool) -> Option<PipeMsg> {
+/// How a connection to a daemon in another session behaves.
+#[derive(Clone, Copy)]
+struct Remote {
+    /// Relay this screen's keyboard and mouse input, which that session cannot see.
+    relay_input: bool,
+    /// Give up after this long so the other disconnected sessions get their turn.
+    hold: Option<Duration>,
+}
+
+const LOCAL: Remote = Remote { relay_input: false, hold: None };
+/// Input frames at most this often: one is enough to prove the input, the rest keep it fresh.
+const INPUT_INTERVAL: Duration = Duration::from_millis(250);
+
+fn write_frame(handle: HANDLE, message: &PipeMsg) -> Option<()> {
+    let mut out = serde_json::to_vec(message).ok()?;
+    out.push(b'\n');
+    let mut written = 0;
+    let ok = unsafe { WriteFile(handle, Some(&out), Some(&mut written), None) }.is_ok()
+        && written as usize == out.len();
+    ok.then_some(())
+}
+
+fn input_frame(tick: u32) -> PipeMsg {
+    PipeMsg { msg: "input".into(), nonce: None, echo: None, password: None, username: None,
+        domain: None, input: Some(tick) }
+}
+
+fn receive_message(handle: HANDLE, stop: &AtomicBool, remote: Remote, mut sent_input: Option<u32>) -> Option<PipeMsg> {
     let mut frame = FrameReader::default();
+    let started = std::time::Instant::now();
+    let mut last_send = started;
     loop {
         if stop.load(Ordering::Acquire) { return None; }
+        if remote.hold.is_some_and(|hold| started.elapsed() >= hold) { return None; }
+        if remote.relay_input && last_send.elapsed() >= INPUT_INTERVAL {
+            if let Some(tick) = last_input_tick().filter(|tick| Some(*tick) != sent_input) {
+                write_frame(handle, &input_frame(tick))?;
+                sent_input = Some(tick);
+                last_send = std::time::Instant::now();
+            }
+        }
         let mut available = 0;
         if unsafe { PeekNamedPipe(handle, None, 0, None, Some(&mut available), None) }.is_err() {
             return None;
@@ -333,24 +438,18 @@ fn receive_message(handle: HANDLE, stop: &AtomicBool) -> Option<PipeMsg> {
     }
 }
 
-fn exchange(handle: HANDLE, stop: &AtomicBool) -> Option<UnlockSignal> {
+fn exchange(handle: HANDLE, stop: &AtomicBool, remote: Remote) -> Option<UnlockSignal> {
     let mut random = [0u8; 32];
     unsafe { BCryptGenRandom(None, &mut random, BCRYPT_USE_SYSTEM_PREFERRED_RNG).ok().ok()?; }
     let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let input = if remote.relay_input { last_input_tick() } else { None };
     let hello = PipeMsg {
         msg: "hello".into(), nonce: Some(nonce.clone()), echo: None,
-        password: None, username: None, domain: None,
+        password: None, username: None, domain: None, input,
     };
-    let mut out = serde_json::to_vec(&hello).ok()?;
-    out.push(b'\n');
-    let mut written = 0;
-    if unsafe { WriteFile(handle, Some(&out), Some(&mut written), None) }.is_err()
-        || written as usize != out.len()
-    {
-        return None;
-    }
+    write_frame(handle, &hello)?;
     // Poll before reading so UnAdvise can cancel while the daemon is silent.
-    let message = receive_message(handle, stop)?;
+    let message = receive_message(handle, stop, remote, input)?;
     validate_message(message, &nonce)
 }
 
@@ -382,16 +481,25 @@ fn run_pipe_client_internal(
         .name("provider-pipe".into())
         .spawn(move || {
             let Ok(_apartment) = crate::events::Apartment::new() else { return; };
-            let name = pipe_name();
+            let own = own_session();
             while !stop.load(Ordering::Acquire) {
-                if let Some(connection) = connect(&name, verifier) {
-                    let signal = exchange(connection.pipe.0, &stop);
-                    drop(connection);
-                    if let Some(signal) = signal {
-                        if stop.load(Ordering::Acquire) { return; }
-                        tracing::info!("[PROVIDER-PIPE] 收到解锁信号（echo 验证通过）");
-                        on_unlock(signal);
-                        return;
+                // Re-evaluated each round: sessions disconnect and reconnect while this screen waits.
+                let targets = targets();
+                let several = targets.len() > 1;
+                for target in targets {
+                    if stop.load(Ordering::Acquire) { return; }
+                    let remote = if target == own { LOCAL } else {
+                        Remote { relay_input: true, hold: several.then_some(Duration::from_secs(3)) }
+                    };
+                    if let Some(connection) = connect(&pipe_name(target), target, verifier) {
+                        let signal = exchange(connection.pipe.0, &stop, remote);
+                        drop(connection);
+                        if let Some(signal) = signal {
+                            if stop.load(Ordering::Acquire) { return; }
+                            tracing::info!("[PROVIDER-PIPE] 收到解锁信号（echo 验证通过）");
+                            on_unlock(signal);
+                            return;
+                        }
                     }
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -414,6 +522,30 @@ mod tests {
             r"D:\Apps\Watch Unlock", r"C:\Program Files\..\Users\a", r"C:\Prog", ""] {
             assert!(trusted_daemon_path(outside, root).is_none(), "{outside} must not be trusted");
         }
+    }
+
+    #[test]
+    fn only_the_empty_console_logon_screen_serves_disconnected_sessions() {
+        // (session, disconnected, user signed in)
+        let sessions = [(0, true, false), (1, true, true), (2, false, false), (4, true, true), (5, false, true)];
+        // A lock screen inside a user's session serves that session only.
+        assert_eq!(pick_targets(1, true, Some(1), &sessions), vec![1]);
+        // The empty logon session on the physical screen serves the disconnected user sessions.
+        assert_eq!(pick_targets(2, false, Some(2), &sessions), vec![1, 4]);
+        // A Remote Desktop logon screen is not on the physical screen.
+        assert_eq!(pick_targets(3, false, Some(2), &sessions), vec![3]);
+        assert_eq!(pick_targets(2, false, None, &sessions), vec![2]);
+        // First sign-in after boot: nothing disconnected, so its own (absent) daemon as before.
+        assert_eq!(pick_targets(1, false, Some(1), &[(0, true, false), (1, false, false)]), vec![1]);
+    }
+
+    #[test]
+    fn hello_and_input_frames_never_carry_secrets() {
+        let wire = serde_json::to_string(&input_frame(7)).unwrap();
+        assert!(wire.contains("\"msg\":\"input\"") && wire.contains("\"input\":7"));
+        let hello = PipeMsg { msg: "hello".into(), nonce: Some("00".into()), echo: None, password: None,
+            username: None, domain: None, input: None };
+        assert!(!serde_json::to_string(&hello).unwrap().contains("input"));
     }
 
     #[test]

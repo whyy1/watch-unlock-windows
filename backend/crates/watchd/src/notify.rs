@@ -61,6 +61,7 @@ impl std::fmt::Display for Failure {
             Self::Network(ERROR_SECURE_FAILURE) => formatter.write_str("请求失败，HTTPS 证书或加密协商未通过。"),
             Self::Network(error) => write!(formatter, "请求失败，推送服务器没有响应（WinHTTP 错误 {error}）。"),
             Self::Rejected(400) => formatter.write_str("推送服务器拒绝了请求（400），通常是设备密钥不对。"),
+            Self::Rejected(404) => formatter.write_str("推送服务器上没有这个地址（404），请确认推送 API 地址以 /push 结尾。"),
             Self::Rejected(status) => write!(formatter, "推送服务器返回错误（{status}）。"),
         }
     }
@@ -155,6 +156,35 @@ fn ip_host(host: &str) -> bool {
 
 fn valid_url(url: &str) -> bool { crack(url).is_some() }
 
+/// The address Bark's JSON API takes: the server followed by `/push`, never the device key,
+/// which always travels in the request body as `device_key`. Fixes what people paste:
+/// - the bare server, `http://192.168.1.10:8080`, which bark-server answers with 404;
+/// - the Bark app's sample URL with the key in its path, `https://api.day.app/KEY/body`, which
+///   would also put the key in plain text into notifications.json.
+/// A path the user chose, such as a reverse-proxy prefix `/bark/push`, is kept.
+pub fn normalize_endpoint(url: &str, key: Option<&str>) -> String {
+    let lower = url.to_ascii_lowercase();
+    let start = if lower.starts_with("https://") { 8 } else if lower.starts_with("http://") { 7 } else { return url.into() };
+    let authority_end = url[start..].find(['/', '?']).map_or(url.len(), |index| start + index);
+    let (server, rest) = url.split_at(authority_end);
+    let (path, query) = rest.split_once('?').map_or((rest, None), |(path, query)| (path, Some(query)));
+    let mut segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
+    let key = key.filter(|key| valid_key(key));
+    let key_at = key.and_then(|key| segments.iter().position(|segment| *segment == key));
+    let query_pairs: Vec<&str> = query.map(|query| query.split('&').collect()).unwrap_or_default();
+    let key_in_query = key.is_some_and(|key| query_pairs.iter()
+        .any(|pair| pair.split_once('=').is_some_and(|(_, value)| value == key)));
+    if key_at.is_none() && !key_in_query && !segments.is_empty() { return url.into(); }
+    if let Some(index) = key_at { segments.truncate(index); }
+    if segments.last() != Some(&"push") { segments.push("push"); }
+    let kept: Vec<&str> = query_pairs.into_iter()
+        .filter(|pair| key.is_none_or(|key| pair.split_once('=').is_none_or(|(_, value)| value != key)))
+        .filter(|pair| !pair.is_empty()).collect();
+    let mut normalized = format!("{server}/{}", segments.join("/"));
+    if !kept.is_empty() { normalized.push('?'); normalized.push_str(&kept.join("&")); }
+    normalized
+}
+
 fn load_config() -> Result<NotificationConfig, Failure> {
     let dir = crate::config::app_dir().ok_or(Failure::NotSaved)?;
     crate::vault::ensure_private_dir(&dir).map_err(|_| Failure::NotSaved)?;
@@ -241,11 +271,12 @@ fn post(target: &Target, payload: &[u8], key: &str) -> Result<(), Unsent> {
 fn send(title: &str, body: &str, require_enabled: bool) -> Result<(), Unsent> {
     let config = load_config()?;
     if require_enabled && !config.enabled { return Err(Failure::Disabled.into()); }
-    let target = crack(&config.endpoint).ok_or(Failure::InvalidEndpoint)?;
     let dir = crate::config::app_dir().ok_or(Failure::NotSaved)?;
     let key = crate::vault::SecretBytes(crate::vault::load_secret(&dir, "bark-key.dpapi").map_err(|_| Failure::NotSaved)?);
     let key_text = std::str::from_utf8(&key.0).unwrap_or("").trim();
     if !valid_key(key_text) { return Err(Failure::InvalidKey.into()); }
+    // Settings saved by older versions may still hold a bare server or a key in the address.
+    let target = crack(&normalize_endpoint(&config.endpoint, Some(key_text))).ok_or(Failure::InvalidEndpoint)?;
     #[derive(serde::Serialize)]
     struct Payload<'a> {
         device_key: &'a str, title: &'a str, body: &'a str, group: &'static str,
@@ -348,6 +379,33 @@ mod tests {
         assert_eq!(response_excerpt(502, b"Bad\r\nGateway", ""), "HTTP 502，响应：Bad  Gateway");
         assert_eq!(response_excerpt(500, b"", "k"), "HTTP 500，响应为空");
         assert_eq!(response_excerpt(500, "长".repeat(500).as_bytes(), "").chars().count(), "HTTP 500，响应：".chars().count() + MAX_EXCERPT);
+    }
+
+    #[test]
+    fn endpoints_point_at_push_and_never_hold_the_key() {
+        let key = Some("YourKey123456");
+        // Already right, including a reverse-proxy prefix and extra query: unchanged.
+        for url in ["https://api.day.app/push", "http://192.168.1.10:8080/push", "https://example.test/bark/push",
+            "https://example.test/push?group=a", "https://example.test/hook"] {
+            assert_eq!(normalize_endpoint(url, key), url);
+        }
+        // The bare server gets /push.
+        assert_eq!(normalize_endpoint("http://192.168.1.10:8080", key), "http://192.168.1.10:8080/push");
+        assert_eq!(normalize_endpoint("http://192.168.1.10:8080/", None), "http://192.168.1.10:8080/push");
+        assert_eq!(normalize_endpoint("https://bark.example.test?x=1", key), "https://bark.example.test/push?x=1");
+        // The Bark app's sample URL: the key and what follows it are dropped.
+        assert_eq!(normalize_endpoint("https://api.day.app/YourKey123456/推送内容", key), "https://api.day.app/push");
+        assert_eq!(normalize_endpoint("http://192.168.1.10:8080/YourKey123456/", key), "http://192.168.1.10:8080/push");
+        assert_eq!(normalize_endpoint("https://example.test/bark/YourKey123456", key), "https://example.test/bark/push");
+        assert_eq!(normalize_endpoint("https://example.test/push/YourKey123456", key), "https://example.test/push");
+        assert_eq!(normalize_endpoint("https://example.test/push?device_key=YourKey123456&group=a", key),
+            "https://example.test/push?group=a");
+        // Without a known key a path segment is never guessed to be one.
+        assert_eq!(normalize_endpoint("https://api.day.app/YourKey123456", None), "https://api.day.app/YourKey123456");
+        for url in ["http://192.168.1.10:8080", "https://api.day.app/YourKey123456/推送内容"] {
+            assert!(valid_url(&normalize_endpoint(url, key)));
+        }
+        assert!(Failure::Rejected(404).to_string().contains("/push"));
     }
 
     #[test]

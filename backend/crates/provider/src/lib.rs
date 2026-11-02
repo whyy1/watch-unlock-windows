@@ -573,6 +573,7 @@ impl ICredentialProviderCredential_Impl for WatchUnlockProvider_Impl {
         _pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
     ) -> windows::core::Result<()> {
         tracing::info!("[PROVIDER] ReportResult: {ntsstatus:?}");
+        if ntsstatus.is_err() { pipe::report_rejected_logon(ntsstatus.0); }
         // 一次性语义：无论成败都清除信号，避免失败后无限重试自动提交
         self.state.submitted.store(true, Ordering::Release);
         lock_ok(&self.state.signal).take();

@@ -107,6 +107,10 @@ pub fn run()->Result<()> {
     let mut lock=Session{generation:1,locked:session::current_session_locked().unwrap_or(false)};
     let mut submissions=SubmissionGate::default();
     let mut provider=None;
+    // Set while the logon screen is on the physical screen in another session, because this
+    // session is disconnected; its keyboard and mouse input only reaches us through the pipe.
+    let mut provider_console=false;
+    let mut console_input:Option<u32>=None;
     let mut scan_requested=true;
     let mut previous_revision=revision();
     let mut last_housekeeping=Instant::now();
@@ -159,6 +163,7 @@ pub fn run()->Result<()> {
                 session::SessionEvent::Unlock=>{
                     if lock.locked && std::mem::take(&mut notify_on_unlock) {crate::notify::notify_unlock_async();}
                     lock.locked=false;session_known=true;invalidate=true;provider=None;
+                    provider_console=false;console_input=None;
                     // A WTS event cannot prove which credential provider succeeded.
                     audit::record("session_unlocked",None,"Windows 会话已解锁；认证来源未归因");
                 }
@@ -187,20 +192,24 @@ pub fn run()->Result<()> {
         }
         while let Ok(event)=pipe_rx.try_recv() {
             match event {
-                pipe::PipeEvent::Hello(connection)=>{
+                pipe::PipeEvent::Hello{connection,console,input}=>{
                     // Once per connection: shows when the logon UI actually became ready.
                     if provider.is_none() {
-                        audit::record("provider_connected",None,if lock.locked {"登录界面组件已连接，可以接收解锁"}
+                        audit::record("provider_connected",None,if console {"屏幕上的登录界面组件已连接（本会话已断开，例如远程桌面断开后），可以接收解锁"}
+                            else if lock.locked {"登录界面组件已连接，可以接收解锁"}
                             else {"登录界面组件已连接（此时还没收到锁屏通知）"});
                     }
-                    provider=Some(connection)
+                    provider=Some(connection);
+                    provider_console=console;
+                    console_input=if console {input} else {None};
                 }
+                pipe::PipeEvent::Input(tick)=>if provider_console {console_input=Some(tick);},
                 pipe::PipeEvent::Gone=>{
                     // After a delivered unlock this is the normal end of the logon screen.
                     if provider.is_some() && lock.locked && !submissions.submitted() {
                         audit::record("provider_disconnected",None,"登录界面组件已断开，重新连接前无法解锁");
                     }
-                    provider=None;
+                    provider=None;provider_console=false;console_input=None;
                 }
             }
         }
@@ -318,7 +327,8 @@ pub fn run()->Result<()> {
         let now=Instant::now();
         let last_input=last_input_tick();
         let authorized=active.iter().find(|device| device.authority.authorized(now)
-            && (device.config.auto_unlock_on_return || device.return_tick.is_some_and(|tick|input_after(last_input,tick))));
+            && (device.config.auto_unlock_on_return || device.return_tick.is_some_and(|tick|
+                input_after(last_input,tick) || input_after(console_input,tick))));
         if let Some(device)=authorized {
             let verified_locked=session::current_session_locked().unwrap_or(false);
             let credential_configured=crate::enroll::credential_configured();
@@ -378,7 +388,8 @@ pub fn run()->Result<()> {
                 "presence":if device.authority.near(status_now){"near"}else if device.authority.armed(){"away"}else{"unknown"},
                 "armed":device.authority.armed(),"wearer_state":"unknown"})}).collect::<Vec<_>>();
             let _=registry::write_json("status.json",&json!({"running":true,"at_ms":audit::epoch_ms(),
-                "locked":lock.locked,"provider_ready":provider.is_some(),"scanner_active":scanner.as_ref().is_some_and(|s|s.is_running()),
+                "locked":lock.locked,"provider_ready":provider.is_some(),"provider_console":provider_console,
+                "console_input_ms":console_input.map(|tick|unsafe {GetTickCount()}.wrapping_sub(tick)),"scanner_active":scanner.as_ref().is_some_and(|s|s.is_running()),
                 "submitted_this_lock":submissions.submitted(),"devices":status}));
         }
         std::thread::sleep(Duration::from_millis(25));

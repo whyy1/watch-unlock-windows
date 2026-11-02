@@ -255,8 +255,15 @@ fn validated_notifications(request: &Value) -> Result<(Notifications, Option<&st
 
 fn save_notifications(request: &Value) -> Result<Value> {
     // Validate every field before changing any encrypted file.
-    let (config, key) = validated_notifications(request)?;
+    let (mut config, key) = validated_notifications(request)?;
     let dir = registry::data_dir()?;
+    // The key travels in the request body; it must not also sit in plain text in the address.
+    let stored = if key.is_none() {
+        crate::vault::load_secret(&dir,"bark-key.dpapi").ok().map(crate::vault::SecretBytes)
+    } else { None };
+    let known = key.or_else(|| stored.as_ref().and_then(|secret| std::str::from_utf8(&secret.0).ok()).map(str::trim));
+    config.endpoint = crate::notify::normalize_endpoint(&config.endpoint, known);
+    crate::notify::validate_url(&config.endpoint)?;
     if let Some(key) = key { crate::vault::save_secret(&dir,"bark-key.dpapi",key.as_bytes())?; }
     registry::write_json("notifications.json", &config)?;
     crate::audit::record("notifications_saved",None,"通知配置已保存，秘密保持加密");
